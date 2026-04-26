@@ -1,0 +1,29 @@
+name: Reusable Deploy
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: "Docker image name (e.g., owner/repo)"
+        type: string
+        required: true
+      version:
+        description: "Version to deploy (e.g., 1.2.3)"
+        type: string
+        required: true
+      environment:
+        description: "Target environment name"
+        type: string
+        required: true
+    secrets:
+      deploy-token:
+        description: "Token or key for deploy target"
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Deploy ${{ inputs.image-name }}:${{ inputs.version }} to ${{ inputs.environment }}
+        run: echo "TODO"

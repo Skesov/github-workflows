@@ -11,6 +11,14 @@ on:
         description: "Paths to lint (space-separated)"
         type: string
         default: "."
+      pytest-paths:
+        description: "Paths to test (space-separated)"
+        type: string
+        default: "."
+      pytest-args:
+        description: "Extra pytest arguments"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -21,3 +29,10 @@ jobs:
     with:
       python-version: ${{ inputs.python-version }}
       ruff-paths: ${{ inputs.ruff-paths }}
+
+  test:
+    uses: Skesov/github-workflows/.github/workflows/_test.yml@master
+    with:
+      python-version: ${{ inputs.python-version }}
+      pytest-paths: ${{ inputs.pytest-paths }}
+      pytest-args: ${{ inputs.pytest-args }}

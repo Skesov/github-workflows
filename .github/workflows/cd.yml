@@ -1,4 +1,4 @@
-name: Reusable Release (Python bot)
+name: Reusable CD (Python bot)
 
 on:
   workflow_call:
@@ -7,6 +7,22 @@ on:
         description: "Docker image name (e.g., owner/repo)"
         type: string
         required: true
+      python-version:
+        description: "Python version for uv"
+        type: string
+        default: "3.12"
+      ruff-paths:
+        description: "Paths to lint (space-separated)"
+        type: string
+        default: "."
+      pytest-paths:
+        description: "Paths to test (space-separated)"
+        type: string
+        default: "."
+      pytest-args:
+        description: "Extra pytest arguments"
+        type: string
+        default: ""
       docker-context:
         description: "Docker build context path"
         type: string
@@ -19,10 +35,17 @@ on:
         description: "Default semver bump level"
         type: string
         default: "patch"
+      environment:
+        description: "Target deploy environment name"
+        type: string
+        default: "production"
     secrets:
       registry-token:
         description: "Token for container registry auth"
         required: true
+      deploy-token:
+        description: "Token or key for deploy target"
+        required: false
     outputs:
       new_tag:
         description: "Created tag (e.g., v1.2.3)"
@@ -36,7 +59,21 @@ permissions:
   packages: write
 
 jobs:
+  lint:
+    uses: Skesov/github-workflows/.github/workflows/_lint.yml@master
+    with:
+      python-version: ${{ inputs.python-version }}
+      ruff-paths: ${{ inputs.ruff-paths }}
+
+  test:
+    uses: Skesov/github-workflows/.github/workflows/_test.yml@master
+    with:
+      python-version: ${{ inputs.python-version }}
+      pytest-paths: ${{ inputs.pytest-paths }}
+      pytest-args: ${{ inputs.pytest-args }}
+
   tag:
+    needs: [lint, test]
     uses: Skesov/github-workflows/.github/workflows/_tag.yml@master
     with:
       default-bump: ${{ inputs.default-bump }}
@@ -73,3 +110,14 @@ jobs:
             ```
             docker pull ghcr.io/${{ inputs.image-name }}:${{ needs.tag.outputs.new_version }}
             ```
+
+  deploy:
+    needs: [tag, publish]
+    if: needs.tag.outputs.new_tag != ''
+    uses: Skesov/github-workflows/.github/workflows/_deploy.yml@master
+    with:
+      image-name: ${{ inputs.image-name }}
+      version: ${{ needs.tag.outputs.new_version }}
+      environment: ${{ inputs.environment }}
+    secrets:
+      deploy-token: ${{ secrets.deploy-token }}
