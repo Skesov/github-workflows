@@ -84,11 +84,11 @@ jobs:
       - name: ruff check
         env:
           RUFF_PATHS: ${{ inputs.ruff-paths }}
-        run: uv run ruff check $RUFF_PATHS
+        run: uv run ruff check "$RUFF_PATHS"
       - name: ruff format
         env:
           RUFF_PATHS: ${{ inputs.ruff-paths }}
-        run: uv run ruff format --check $RUFF_PATHS
+        run: uv run ruff format --check "$RUFF_PATHS"
 
   test:
     runs-on: ubuntu-latest
@@ -104,7 +104,9 @@ jobs:
         env:
           PYTEST_PATHS: ${{ inputs.pytest-paths }}
           PYTEST_ARGS: ${{ inputs.pytest-args }}
-        run: uv run pytest $PYTEST_PATHS $PYTEST_ARGS
+        run: |
+          # shellcheck disable=SC2086
+          uv run pytest "$PYTEST_PATHS" $PYTEST_ARGS
 
   tag:
     needs: [lint, test]

@@ -8,7 +8,7 @@ on:
         type: string
         default: "3.12"
       ruff-paths:
-        description: "Paths to lint (space-separated)"
+        description: "Path to lint"
         type: string
         default: "."
 
@@ -30,9 +30,9 @@ jobs:
       - name: ruff check
         env:
           RUFF_PATHS: ${{ inputs.ruff-paths }}
-        run: uv run ruff check $RUFF_PATHS
+        run: uv run ruff check "$RUFF_PATHS"
 
       - name: ruff format
         env:
           RUFF_PATHS: ${{ inputs.ruff-paths }}
-        run: uv run ruff format --check $RUFF_PATHS
+        run: uv run ruff format --check "$RUFF_PATHS"

@@ -8,7 +8,7 @@ on:
         type: string
         default: "3.12"
       pytest-paths:
-        description: "Paths to test (space-separated)"
+        description: "Path to test"
         type: string
         default: "."
       pytest-args:
@@ -35,4 +35,6 @@ jobs:
         env:
           PYTEST_PATHS: ${{ inputs.pytest-paths }}
           PYTEST_ARGS: ${{ inputs.pytest-args }}
-        run: uv run pytest $PYTEST_PATHS $PYTEST_ARGS
+        run: |
+          # shellcheck disable=SC2086
+          uv run pytest "$PYTEST_PATHS" $PYTEST_ARGS
