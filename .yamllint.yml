@@ -1,0 +1,10 @@
+extends: default
+
+rules:
+  line-length:
+    max: 120
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false  # allows bare 'on:' as a GitHub Actions trigger key
+  comments:
+    min-spaces-from-content: 1

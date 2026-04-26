@@ -20,14 +20,14 @@ Primitives can be called independently. Orchestrators compose them into a full p
 
 **Pull request** — verification only:
 
-```
+```text
 lint
 test
 ```
 
 **Push to master** — full delivery:
 
-```
+```text
 lint ┐
 test ┘→ tag → build → publish → deploy
 ```
