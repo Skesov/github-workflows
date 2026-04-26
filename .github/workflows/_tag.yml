@@ -14,19 +14,19 @@ on:
     outputs:
       new_tag:
         description: "Created tag (e.g., v1.2.3)"
-        value: ${{ jobs.tag.outputs.new_tag }}
+        value: ${{ jobs.bump.outputs.new_tag }}
       new_version:
         description: "Version without prefix (e.g., 1.2.3)"
-        value: ${{ jobs.tag.outputs.new_version }}
+        value: ${{ jobs.bump.outputs.new_version }}
       changelog:
         description: "Generated changelog from conventional commits"
-        value: ${{ jobs.tag.outputs.changelog }}
+        value: ${{ jobs.bump.outputs.changelog }}
 
 permissions:
   contents: write
 
 jobs:
-  tag:
+  bump:
     runs-on: ubuntu-latest
     outputs:
       new_tag: ${{ steps.tag.outputs.new_tag }}

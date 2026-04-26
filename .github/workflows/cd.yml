@@ -72,17 +72,39 @@ permissions:
 
 jobs:
   lint:
-    uses: Skesov/github-workflows/.github/workflows/_lint.yml@master
-    with:
-      python-version: ${{ inputs.python-version }}
-      ruff-paths: ${{ inputs.ruff-paths }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: ${{ inputs.python-version }}
+      - run: uv sync --frozen --dev
+      - name: ruff check
+        env:
+          RUFF_PATHS: ${{ inputs.ruff-paths }}
+        run: uv run ruff check $RUFF_PATHS
+      - name: ruff format
+        env:
+          RUFF_PATHS: ${{ inputs.ruff-paths }}
+        run: uv run ruff format --check $RUFF_PATHS
 
   test:
-    uses: Skesov/github-workflows/.github/workflows/_test.yml@master
-    with:
-      python-version: ${{ inputs.python-version }}
-      pytest-paths: ${{ inputs.pytest-paths }}
-      pytest-args: ${{ inputs.pytest-args }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: ${{ inputs.python-version }}
+      - run: uv sync --frozen --dev
+      - name: pytest
+        env:
+          PYTEST_PATHS: ${{ inputs.pytest-paths }}
+          PYTEST_ARGS: ${{ inputs.pytest-args }}
+        run: uv run pytest $PYTEST_PATHS $PYTEST_ARGS
 
   tag:
     needs: [lint, test]
