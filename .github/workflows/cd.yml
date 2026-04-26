@@ -43,8 +43,8 @@ on:
         description: "Path to HelmRelease file in homelab repo"
         type: string
         required: true
-      image-tag-path:
-        description: "yq expression targeting the image tag field"
+      tag-paths:
+        description: "Newline-separated yq paths to update with the new version"
         type: string
         default: ".spec.values.image.tag"
       environment:
@@ -155,7 +155,7 @@ jobs:
       version: ${{ needs.tag.outputs.new_version }}
       homelab-repo: ${{ inputs.homelab-repo }}
       manifest-path: ${{ inputs.manifest-path }}
-      image-tag-path: ${{ inputs.image-tag-path }}
+      tag-paths: ${{ inputs.tag-paths }}
       environment: ${{ inputs.environment }}
     secrets:
       gitops-token: ${{ secrets.gitops-token }}

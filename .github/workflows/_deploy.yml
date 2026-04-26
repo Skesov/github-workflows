@@ -15,8 +15,8 @@ on:
         description: "Path to HelmRelease file in homelab repo (e.g., flux/apps/skesov-bot/helmrelease.yaml)"
         type: string
         required: true
-      image-tag-path:
-        description: "yq expression targeting the image tag field"
+      tag-paths:
+        description: "Newline-separated yq paths to update with the new version"
         type: string
         default: ".spec.values.image.tag"
       environment:
@@ -38,12 +38,15 @@ jobs:
           repository: ${{ inputs.homelab-repo }}
           token: ${{ secrets.gitops-token }}
 
-      - name: Update image tag
+      - name: Update version fields
         env:
           VERSION: ${{ inputs.version }}
           MANIFEST: ${{ inputs.manifest-path }}
-          TAG_PATH: ${{ inputs.image-tag-path }}
-        run: yq e "$TAG_PATH = \"$VERSION\"" -i "$MANIFEST"
+          TAG_PATHS: ${{ inputs.tag-paths }}
+        run: |
+          while IFS= read -r path; do
+            [ -n "$path" ] && yq e "$path = \"$VERSION\"" -i "$MANIFEST"
+          done <<< "$TAG_PATHS"
 
       - name: Commit and push
         env:
