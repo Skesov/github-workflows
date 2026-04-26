@@ -44,8 +44,10 @@ jobs:
           MANIFEST: ${{ inputs.manifest-path }}
           TAG_PATHS: ${{ inputs.tag-paths }}
         run: |
-          while IFS= read -r path; do
-            [ -n "$path" ] && yq e "$path = \"$VERSION\"" -i "$MANIFEST"
+          while IFS= read -r yq_path; do
+            [ -z "$yq_path" ] && continue
+            echo "Updating $yq_path → $VERSION"
+            yq eval "$yq_path = strenv(VERSION)" -i "$MANIFEST"
           done <<< "$TAG_PATHS"
 
       - name: Commit and push
