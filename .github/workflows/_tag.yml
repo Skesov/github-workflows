@@ -1,0 +1,46 @@
+name: Reusable Tag (semver)
+
+on:
+  workflow_call:
+    inputs:
+      default-bump:
+        description: "Default bump when no conventional commit prefix found"
+        type: string
+        default: "patch"
+      release-branches:
+        description: "Branches that trigger releases"
+        type: string
+        default: "master,main"
+    outputs:
+      new_tag:
+        description: "Created tag (e.g., v1.2.3)"
+        value: ${{ jobs.tag.outputs.new_tag }}
+      new_version:
+        description: "Version without prefix (e.g., 1.2.3)"
+        value: ${{ jobs.tag.outputs.new_version }}
+      changelog:
+        description: "Generated changelog from conventional commits"
+        value: ${{ jobs.tag.outputs.changelog }}
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.tag.outputs.new_tag }}
+      new_version: ${{ steps.tag.outputs.new_version }}
+      changelog: ${{ steps.tag.outputs.changelog }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Bump version and push tag
+        id: tag
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: ${{ inputs.default-bump }}
+          release_branches: ${{ inputs.release-branches }}

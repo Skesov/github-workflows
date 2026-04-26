@@ -1,0 +1,38 @@
+name: Reusable Lint (Python + ruff)
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python version for uv"
+        type: string
+        default: "3.12"
+      ruff-paths:
+        description: "Paths to lint (space-separated)"
+        type: string
+        default: "."
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - run: uv sync --frozen --dev
+
+      - name: ruff check
+        env:
+          RUFF_PATHS: ${{ inputs.ruff-paths }}
+        run: uv run ruff check $RUFF_PATHS
+
+      - name: ruff format
+        env:
+          RUFF_PATHS: ${{ inputs.ruff-paths }}
+        run: uv run ruff format --check $RUFF_PATHS
