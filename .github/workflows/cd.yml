@@ -1,4 +1,4 @@
-name: Reusable CD (Python bot)
+name: Reusable CD
 
 on:
   workflow_call:
