@@ -1,0 +1,38 @@
+name: Reusable CI (Python bot)
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python version for uv"
+        type: string
+        default: "3.12"
+      ruff-paths:
+        description: "Paths to lint (space-separated)"
+        type: string
+        default: "."
+      pytest-paths:
+        description: "Paths to test (space-separated)"
+        type: string
+        default: "."
+      pytest-args:
+        description: "Extra pytest arguments"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    uses: Skesov/github-workflows/.github/workflows/_lint.yml@master
+    with:
+      python-version: ${{ inputs.python-version }}
+      ruff-paths: ${{ inputs.ruff-paths }}
+
+  test:
+    uses: Skesov/github-workflows/.github/workflows/_test.yml@master
+    with:
+      python-version: ${{ inputs.python-version }}
+      pytest-paths: ${{ inputs.pytest-paths }}
+      pytest-args: ${{ inputs.pytest-args }}

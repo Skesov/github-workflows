@@ -1,0 +1,57 @@
+name: Reusable Deploy (Flux gitops)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version to deploy (e.g., 1.2.3)"
+        type: string
+        required: true
+      homelab-repo:
+        description: "GitOps repo to update"
+        type: string
+        default: "Skesov/homelab"
+      manifest-path:
+        description: "Path to HelmRelease file in homelab repo (e.g., flux/apps/skesov-bot/helmrelease.yaml)"
+        type: string
+        required: true
+      image-tag-path:
+        description: "yq expression targeting the image tag field"
+        type: string
+        default: ".spec.values.image.tag"
+      environment:
+        description: "GitHub Environment name for protection rules"
+        type: string
+        default: "production"
+    secrets:
+      gitops-token:
+        description: "GitHub PAT with write access to homelab repo"
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.homelab-repo }}
+          token: ${{ secrets.gitops-token }}
+
+      - name: Update image tag
+        env:
+          VERSION: ${{ inputs.version }}
+          MANIFEST: ${{ inputs.manifest-path }}
+          TAG_PATH: ${{ inputs.image-tag-path }}
+        run: yq e "$TAG_PATH = \"$VERSION\"" -i "$MANIFEST"
+
+      - name: Commit and push
+        env:
+          VERSION: ${{ inputs.version }}
+          MANIFEST: ${{ inputs.manifest-path }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$MANIFEST"
+          git commit -m "chore(deploy): bump image tag to $VERSION"
+          git push

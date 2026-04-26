@@ -1,0 +1,137 @@
+name: Reusable CD (Python bot)
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: "Docker image name (e.g., owner/repo)"
+        type: string
+        required: true
+      python-version:
+        description: "Python version for uv"
+        type: string
+        default: "3.12"
+      ruff-paths:
+        description: "Paths to lint (space-separated)"
+        type: string
+        default: "."
+      pytest-paths:
+        description: "Paths to test (space-separated)"
+        type: string
+        default: "."
+      pytest-args:
+        description: "Extra pytest arguments"
+        type: string
+        default: ""
+      docker-context:
+        description: "Docker build context path"
+        type: string
+        default: "."
+      platforms:
+        description: "Target platforms (comma-separated)"
+        type: string
+        default: "linux/amd64,linux/arm64"
+      default-bump:
+        description: "Default semver bump level"
+        type: string
+        default: "patch"
+      homelab-repo:
+        description: "GitOps repo to update"
+        type: string
+        default: "Skesov/homelab"
+      manifest-path:
+        description: "Path to HelmRelease file in homelab repo"
+        type: string
+        required: true
+      image-tag-path:
+        description: "yq expression targeting the image tag field"
+        type: string
+        default: ".spec.values.image.tag"
+      environment:
+        description: "GitHub Environment name for protection rules"
+        type: string
+        default: "production"
+    secrets:
+      registry-token:
+        description: "Token for container registry auth"
+        required: true
+      gitops-token:
+        description: "GitHub PAT with write access to homelab repo"
+        required: true
+    outputs:
+      new_tag:
+        description: "Created tag (e.g., v1.2.3)"
+        value: ${{ jobs.tag.outputs.new_tag }}
+      new_version:
+        description: "Version without prefix (e.g., 1.2.3)"
+        value: ${{ jobs.tag.outputs.new_version }}
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  lint:
+    uses: Skesov/github-workflows/.github/workflows/_lint.yml@master
+    with:
+      python-version: ${{ inputs.python-version }}
+      ruff-paths: ${{ inputs.ruff-paths }}
+
+  test:
+    uses: Skesov/github-workflows/.github/workflows/_test.yml@master
+    with:
+      python-version: ${{ inputs.python-version }}
+      pytest-paths: ${{ inputs.pytest-paths }}
+      pytest-args: ${{ inputs.pytest-args }}
+
+  tag:
+    needs: [lint, test]
+    uses: Skesov/github-workflows/.github/workflows/_tag.yml@master
+    with:
+      default-bump: ${{ inputs.default-bump }}
+
+  build:
+    needs: tag
+    if: needs.tag.outputs.new_tag != ''
+    uses: Skesov/github-workflows/.github/workflows/_docker.yml@master
+    with:
+      image-name: ${{ inputs.image-name }}
+      version: ${{ needs.tag.outputs.new_version }}
+      context: ${{ inputs.docker-context }}
+      platforms: ${{ inputs.platforms }}
+    secrets:
+      registry-token: ${{ secrets.registry-token }}
+
+  publish:
+    needs: [tag, build]
+    if: needs.tag.outputs.new_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.new_tag }}
+          name: ${{ needs.tag.outputs.new_tag }}
+          body: |
+            ${{ needs.tag.outputs.changelog }}
+
+            ## Docker
+
+            ```
+            docker pull ghcr.io/${{ inputs.image-name }}:${{ needs.tag.outputs.new_version }}
+            ```
+
+  deploy:
+    needs: [tag, publish]
+    if: needs.tag.outputs.new_tag != ''
+    uses: Skesov/github-workflows/.github/workflows/_deploy.yml@master
+    with:
+      version: ${{ needs.tag.outputs.new_version }}
+      homelab-repo: ${{ inputs.homelab-repo }}
+      manifest-path: ${{ inputs.manifest-path }}
+      image-tag-path: ${{ inputs.image-tag-path }}
+      environment: ${{ inputs.environment }}
+    secrets:
+      gitops-token: ${{ secrets.gitops-token }}

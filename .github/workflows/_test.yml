@@ -1,0 +1,38 @@
+name: Reusable Test (Python + pytest)
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python version for uv"
+        type: string
+        default: "3.12"
+      pytest-paths:
+        description: "Paths to test (space-separated)"
+        type: string
+        default: "."
+      pytest-args:
+        description: "Extra pytest arguments"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - run: uv sync --frozen --dev
+
+      - name: pytest
+        env:
+          PYTEST_PATHS: ${{ inputs.pytest-paths }}
+          PYTEST_ARGS: ${{ inputs.pytest-args }}
+        run: uv run pytest $PYTEST_PATHS $PYTEST_ARGS
