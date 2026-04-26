@@ -1,0 +1,75 @@
+name: Reusable Release (Python bot)
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: "Docker image name (e.g., owner/repo)"
+        type: string
+        required: true
+      docker-context:
+        description: "Docker build context path"
+        type: string
+        default: "."
+      platforms:
+        description: "Target platforms (comma-separated)"
+        type: string
+        default: "linux/amd64,linux/arm64"
+      default-bump:
+        description: "Default semver bump level"
+        type: string
+        default: "patch"
+    secrets:
+      registry-token:
+        description: "Token for container registry auth"
+        required: true
+    outputs:
+      new_tag:
+        description: "Created tag (e.g., v1.2.3)"
+        value: ${{ jobs.tag.outputs.new_tag }}
+      new_version:
+        description: "Version without prefix (e.g., 1.2.3)"
+        value: ${{ jobs.tag.outputs.new_version }}
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  tag:
+    uses: Skesov/github-workflows/.github/workflows/_tag.yml@master
+    with:
+      default-bump: ${{ inputs.default-bump }}
+
+  build:
+    needs: tag
+    if: needs.tag.outputs.new_tag != ''
+    uses: Skesov/github-workflows/.github/workflows/_docker.yml@master
+    with:
+      image-name: ${{ inputs.image-name }}
+      version: ${{ needs.tag.outputs.new_version }}
+      context: ${{ inputs.docker-context }}
+      platforms: ${{ inputs.platforms }}
+    secrets:
+      registry-token: ${{ secrets.registry-token }}
+
+  publish:
+    needs: [tag, build]
+    if: needs.tag.outputs.new_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.new_tag }}
+          name: ${{ needs.tag.outputs.new_tag }}
+          body: |
+            ${{ needs.tag.outputs.changelog }}
+
+            ## Docker
+
+            ```
+            docker pull ghcr.io/${{ inputs.image-name }}:${{ needs.tag.outputs.new_version }}
+            ```
