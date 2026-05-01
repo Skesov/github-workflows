@@ -97,12 +97,13 @@ jobs:
 
 ### `ci.yml`
 
-| Input            | Type   | Default  | Description            |
-| ---------------- | ------ | -------- | ---------------------- |
-| `python-version` | string | `"3.12"` | Python version         |
-| `ruff-paths`     | string | `"."`    | Paths to lint          |
-| `pytest-paths`   | string | `"."`    | Paths to test          |
-| `pytest-args`    | string | `""`     | Extra pytest arguments |
+| Input            | Type   | Default  | Description                                   |
+| ---------------- | ------ | -------- | --------------------------------------------- |
+| `python-version` | string | `"3.12"` | Python version                                |
+| `ruff-paths`     | string | `"."`    | Paths to lint                                 |
+| `pytest-paths`   | string | `"."`    | Paths to test                                 |
+| `pytest-args`    | string | `""`     | Extra pytest arguments                        |
+| `pytest-env`     | string | `"{}"`   | Env vars for pytest as JSON, e.g. `{"K":"V"}` |
 
 ### `cd.yml`
 
@@ -113,6 +114,7 @@ jobs:
 | `ruff-paths`     | string | `"."`                       | Paths to lint                                  |
 | `pytest-paths`   | string | `"."`                       | Paths to test                                  |
 | `pytest-args`    | string | `""`                        | Extra pytest arguments                         |
+| `pytest-env`     | string | `"{}"`                      | Env vars for pytest as JSON, e.g. `{"K":"V"}`  |
 | `docker-context` | string | `"."`                       | Docker build context                           |
 | `platforms`      | string | `"linux/amd64,linux/arm64"` | Target platforms                               |
 | `default-bump`   | string | `"patch"`                   | Semver bump when no conventional commit prefix |

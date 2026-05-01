@@ -19,6 +19,10 @@ on:
         description: "Extra pytest arguments"
         type: string
         default: ""
+      pytest-env:
+        description: 'Environment variables for pytest as JSON (e.g. {"KEY": "value"})'
+        type: string
+        default: "{}"
 
 permissions:
   contents: read
@@ -49,6 +53,19 @@ jobs:
         with:
           python-version: ${{ inputs.python-version }}
       - run: uv sync --frozen --dev
+      - name: Export secrets to env
+        env:
+          _SECRETS: ${{ toJSON(secrets) }}
+        run: echo "$_SECRETS" | jq -r 'to_entries[] | select(.key != "github_token") | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Export pytest-env to env
+        if: inputs.pytest-env != '{}'
+        env:
+          PYTEST_ENV: ${{ inputs.pytest-env }}
+        run: echo "$PYTEST_ENV" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+        shell: bash
+
       - name: pytest
         env:
           PYTEST_PATHS: ${{ inputs.pytest-paths }}
