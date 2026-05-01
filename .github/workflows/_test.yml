@@ -35,7 +35,13 @@ jobs:
 
       - run: uv sync --frozen --dev
 
-      - name: Set pytest env
+      - name: Export secrets to env
+        env:
+          _SECRETS: ${{ toJSON(secrets) }}
+        run: echo "$_SECRETS" | jq -r 'to_entries[] | select(.key != "github_token") | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Export pytest-env to env
         if: inputs.pytest-env != '{}'
         env:
           PYTEST_ENV: ${{ inputs.pytest-env }}
