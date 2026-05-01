@@ -107,7 +107,12 @@ jobs:
       - name: Export secrets to env
         env:
           _SECRETS: ${{ toJSON(secrets) }}
-        run: echo "$_SECRETS" | jq -r 'to_entries[] | select(.key != "github_token") | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+        run: |
+          echo "$_SECRETS" \
+            | jq -r 'to_entries[]
+                | select(.key != "github_token")
+                | "\(.key)=\(.value)"' \
+            >> "$GITHUB_ENV"
         shell: bash
 
       - name: Export pytest-env to env
