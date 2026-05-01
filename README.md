@@ -62,6 +62,7 @@ jobs:
     with:
       ruff-paths: "src/"
       pytest-paths: "tests/"
+    secrets: inherit
 ```
 
 ### `.github/workflows/cd.yml`
@@ -85,9 +86,7 @@ jobs:
       ruff-paths: "src/"
       pytest-paths: "tests/"
       manifest-path: "flux/apps/my-project/helmrelease.yaml"
-    secrets:
-      registry-token: ${{ secrets.GITHUB_TOKEN }}
-      gitops-token: ${{ secrets.GITOPS_TOKEN }}
+    secrets: inherit
     permissions:
       contents: write
       packages: write
@@ -129,3 +128,8 @@ jobs:
 | ---------------- | -------- | ------------------------------------------ |
 | `registry-token` | `cd.yml` | `GITHUB_TOKEN` — push to ghcr.io           |
 | `gitops-token`   | `cd.yml` | PAT with `contents: write` on homelab repo |
+
+All workflows use `secrets: inherit`. Any repo secret is automatically
+exported as an environment variable in the pytest step via `toJSON(secrets)`.
+No workflow changes needed when adding new secrets — set the secret on the
+caller repo and tests pick it up.
