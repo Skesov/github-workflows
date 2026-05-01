@@ -15,6 +15,10 @@ on:
         description: "Extra pytest arguments"
         type: string
         default: ""
+      pytest-env:
+        description: 'Environment variables for pytest as JSON (e.g. {"KEY": "value"})'
+        type: string
+        default: "{}"
 
 permissions:
   contents: read
@@ -30,6 +34,13 @@ jobs:
           python-version: ${{ inputs.python-version }}
 
       - run: uv sync --frozen --dev
+
+      - name: Set pytest env
+        if: inputs.pytest-env != '{}'
+        env:
+          PYTEST_ENV: ${{ inputs.pytest-env }}
+        run: echo "$PYTEST_ENV" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+        shell: bash
 
       - name: pytest
         env:
