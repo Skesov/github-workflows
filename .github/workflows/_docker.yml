@@ -23,6 +23,18 @@ on:
         description: "Docker build context path"
         type: string
         default: "."
+      dockerfile:
+        description: "Path to Dockerfile (relative to repo root). Empty means <context>/Dockerfile."
+        type: string
+        default: ""
+      build-args:
+        description: "Newline-separated KEY=value build args forwarded to docker/build-push-action."
+        type: string
+        default: ""
+      cache-scope:
+        description: "Optional GHA build cache scope (set when one repo builds multiple images)."
+        type: string
+        default: ""
     secrets:
       registry-token:
         description: "Token for container registry auth"
@@ -59,9 +71,17 @@ jobs:
       - uses: docker/build-push-action@v7
         with:
           context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          build-args: ${{ inputs.build-args }}
           platforms: ${{ inputs.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: >-
+            ${{ inputs.cache-scope != ''
+                && format('type=gha,scope={0}', inputs.cache-scope)
+                || 'type=gha' }}
+          cache-to: >-
+            ${{ inputs.cache-scope != ''
+                && format('type=gha,mode=max,scope={0}', inputs.cache-scope)
+                || 'type=gha,mode=max' }}
