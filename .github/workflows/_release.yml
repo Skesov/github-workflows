@@ -1,0 +1,67 @@
+name: Reusable Release (release-please)
+
+on:
+  workflow_call:
+    inputs:
+      target-branch:
+        description: "Branch to release from"
+        type: string
+        default: "master"
+      config-file:
+        description: "Path to release-please-config.json (empty = repo default)"
+        type: string
+        default: ""
+      manifest-file:
+        description: "Path to .release-please-manifest.json (empty = repo default)"
+        type: string
+        default: ""
+    outputs:
+      releases_created:
+        description: "true if any release was created on this run"
+        value: ${{ jobs.run.outputs.releases_created }}
+      released_packages:
+        description: |
+          JSON array of objects describing released packages, e.g.
+          [{"path":"bot","tag":"bot-v1.2.0","version":"1.2.0"}, ...]
+          Empty array when releases_created is false.
+        value: ${{ jobs.run.outputs.released_packages }}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.rp.outputs.releases_created }}
+      released_packages: ${{ steps.aggregate.outputs.packages || '[]' }}
+    steps:
+      - uses: googleapis/release-please-action@v5.0.0
+        id: rp
+        with:
+          target-branch: ${{ inputs.target-branch }}
+          config-file: ${{ inputs.config-file }}
+          manifest-file: ${{ inputs.manifest-file }}
+
+      - name: Aggregate released packages
+        id: aggregate
+        if: steps.rp.outputs.releases_created == 'true'
+        env:
+          RP_OUTPUTS: ${{ toJSON(steps.rp.outputs) }}
+        run: |
+          set -euo pipefail
+          paths=$(jq -r '.paths_released // "[]"' <<<"$RP_OUTPUTS")
+          packages=$(jq -c --argjson paths "$paths" '
+            [
+              $paths[] as $p
+              | {
+                  path: $p,
+                  tag: (.[$p + "--tag_name"] // .tag_name),
+                  version: (.[$p + "--version"] // .version)
+                }
+              | select(.tag != null and .version != null)
+            ]
+          ' <<<"$RP_OUTPUTS")
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+        shell: bash
