@@ -3,10 +3,7 @@ name: Reusable CD
 on:
   workflow_call:
     inputs:
-      image-name:
-        description: "Docker image name (e.g., owner/repo)"
-        type: string
-        required: true
+      # === Lint / test ===
       python-version:
         description: "Python version for uv"
         type: string
@@ -27,34 +24,75 @@ on:
         description: 'Environment variables for pytest as JSON (e.g. {"KEY": "value"})'
         type: string
         default: "{}"
+
+      # === Single-image mode (used when `images` is empty) ===
+      image-name:
+        description: "Docker image name (e.g. owner/repo). Required when `images` is empty."
+        type: string
+        default: ""
       docker-context:
         description: "Docker build context path"
         type: string
         default: "."
-      platforms:
-        description: "Target platforms (comma-separated)"
+      dockerfile:
+        description: "Path to Dockerfile (relative to repo root). Empty means <context>/Dockerfile."
         type: string
-        default: "linux/amd64,linux/arm64"
-      default-bump:
-        description: "Default semver bump level"
+        default: ""
+      build-args:
+        description: "Newline-separated KEY=value build args"
         type: string
-        default: "patch"
-      homelab-repo:
-        description: "GitOps repo to update"
+        default: ""
+      cache-scope:
+        description: "Optional GHA build cache scope"
         type: string
-        default: "Skesov/homelab"
+        default: ""
       manifest-path:
-        description: "Path to HelmRelease file in homelab repo"
+        description: "Path to HelmRelease file in homelab repo. Required when `images` is empty."
         type: string
-        required: true
+        default: ""
       tag-paths:
         description: "Newline-separated yq paths to update with the new version"
         type: string
         default: ".spec.values.image.tag"
+
+      # === Multi-image mode ===
+      images:
+        description: |
+          Optional YAML list of component image specs. When set, takes priority over single-image inputs.
+          Each entry: { name, package-path, context?, dockerfile?, build-args?, cache-scope?,
+                        manifest-path, tag-paths?, platforms? }
+          `package-path` must match a key in release-please-config.json.
+        type: string
+        default: ""
+
+      # === Shared ===
+      platforms:
+        description: "Default target platforms (comma-separated). Overridable per-image."
+        type: string
+        default: "linux/amd64,linux/arm64"
+      homelab-repo:
+        description: "GitOps repo to update"
+        type: string
+        default: "Skesov/homelab"
       environment:
         description: "GitHub Environment name for protection rules"
         type: string
         default: "production"
+
+      # === Release-please ===
+      target-branch:
+        description: "Branch to release from"
+        type: string
+        default: "master"
+      release-config-file:
+        description: "Path to release-please-config.json (empty = repo default)"
+        type: string
+        default: ""
+      release-manifest-file:
+        description: "Path to .release-please-manifest.json (empty = repo default)"
+        type: string
+        default: ""
+
     secrets:
       registry-token:
         description: "Token for container registry auth"
@@ -62,17 +100,19 @@ on:
       gitops-token:
         description: "GitHub PAT with write access to homelab repo"
         required: true
+
     outputs:
-      new_tag:
-        description: "Created tag (e.g., v1.2.3)"
-        value: ${{ jobs.tag.outputs.new_tag }}
-      new_version:
-        description: "Version without prefix (e.g., 1.2.3)"
-        value: ${{ jobs.tag.outputs.new_version }}
+      releases_created:
+        description: "true if any release was created"
+        value: ${{ jobs.release.outputs.releases_created }}
+      released_packages:
+        description: "JSON array of released packages (see _release.yml outputs)"
+        value: ${{ jobs.release.outputs.released_packages }}
 
 permissions:
   contents: write
   packages: write
+  pull-requests: write
 
 jobs:
   lint:
@@ -130,54 +170,134 @@ jobs:
           # shellcheck disable=SC2086
           uv run pytest "$PYTEST_PATHS" $PYTEST_ARGS
 
-  tag:
+  release:
     needs: [lint, test]
-    uses: Skesov/github-workflows/.github/workflows/_tag.yml@master
+    uses: Skesov/github-workflows/.github/workflows/_release.yml@master
     with:
-      default-bump: ${{ inputs.default-bump }}
+      target-branch: ${{ inputs.target-branch }}
+      config-file: ${{ inputs.release-config-file }}
+      manifest-file: ${{ inputs.release-manifest-file }}
+
+  transform:
+    needs: release
+    if: needs.release.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      build_matrix: ${{ steps.t.outputs.build_matrix }}
+    steps:
+      - name: Build matrix from images / single-image inputs
+        id: t
+        env:
+          IMAGES: ${{ inputs.images }}
+          SINGLE_NAME: ${{ inputs.image-name }}
+          SINGLE_CONTEXT: ${{ inputs.docker-context }}
+          SINGLE_DOCKERFILE: ${{ inputs.dockerfile }}
+          SINGLE_BUILD_ARGS: ${{ inputs.build-args }}
+          SINGLE_CACHE_SCOPE: ${{ inputs.cache-scope }}
+          SINGLE_MANIFEST: ${{ inputs.manifest-path }}
+          SINGLE_TAG_PATHS: ${{ inputs.tag-paths }}
+          PLATFORMS: ${{ inputs.platforms }}
+          RELEASED: ${{ needs.release.outputs.released_packages }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$IMAGES" ]; then
+            specs=$(yq -o=json '.' <<<"$IMAGES")
+          else
+            if [ -z "$SINGLE_NAME" ] || [ -z "$SINGLE_MANIFEST" ]; then
+              echo "::error::Either 'images' or both 'image-name' and 'manifest-path' must be set"
+              exit 1
+            fi
+            specs=$(jq -nc \
+              --arg name "$SINGLE_NAME" \
+              --arg ctx "$SINGLE_CONTEXT" \
+              --arg dfile "$SINGLE_DOCKERFILE" \
+              --arg args "$SINGLE_BUILD_ARGS" \
+              --arg scope "$SINGLE_CACHE_SCOPE" \
+              --arg mfest "$SINGLE_MANIFEST" \
+              --arg tpaths "$SINGLE_TAG_PATHS" \
+              '[{
+                name: $name,
+                "package-path": ".",
+                context: $ctx,
+                dockerfile: $dfile,
+                "build-args": $args,
+                "cache-scope": $scope,
+                "manifest-path": $mfest,
+                "tag-paths": $tpaths
+              }]')
+          fi
+
+          matrix=$(jq -nc \
+            --argjson specs "$specs" \
+            --argjson released "$RELEASED" \
+            --arg platforms "$PLATFORMS" '
+              {
+                include: [
+                  $specs[] as $s
+                  | ($released[] | select(.path == $s["package-path"])) as $r
+                  | {
+                      name:          $s.name,
+                      context:       ($s.context // "."),
+                      dockerfile:    ($s.dockerfile // ""),
+                      "build-args":  ($s["build-args"] // ""),
+                      "cache-scope": ($s["cache-scope"] // ""),
+                      "manifest-path": $s["manifest-path"],
+                      "tag-paths":   ($s["tag-paths"] // ".spec.values.image.tag"),
+                      platforms:     ($s.platforms // $platforms),
+                      version:       $r.version,
+                      tag:           $r.tag
+                    }
+                ]
+              }
+          ')
+
+          count=$(jq '.include | length' <<<"$matrix")
+          echo "Matrix entries: $count"
+          jq '.' <<<"$matrix"
+
+          if [ "$count" = "0" ]; then
+            echo "::error::Release created but no image spec matched a released package-path."
+            echo "::error::Check 'images[*].package-path' against release-please-config.json packages."
+            exit 1
+          fi
+
+          {
+            echo "build_matrix<<EOF"
+            echo "$matrix"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        shell: bash
 
   build:
-    needs: tag
-    if: needs.tag.outputs.new_tag != ''
+    needs: [release, transform]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.transform.outputs.build_matrix) }}
     uses: Skesov/github-workflows/.github/workflows/_docker.yml@master
     with:
-      image-name: ${{ inputs.image-name }}
-      version: ${{ needs.tag.outputs.new_version }}
-      context: ${{ inputs.docker-context }}
-      platforms: ${{ inputs.platforms }}
+      image-name: ${{ matrix.name }}
+      version: ${{ matrix.version }}
+      context: ${{ matrix.context }}
+      dockerfile: ${{ matrix.dockerfile }}
+      build-args: ${{ matrix.build-args }}
+      cache-scope: ${{ matrix.cache-scope }}
+      platforms: ${{ matrix.platforms }}
     secrets:
       registry-token: ${{ secrets.registry-token }}
 
-  publish:
-    needs: [tag, build]
-    if: needs.tag.outputs.new_tag != ''
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.tag.outputs.new_tag }}
-          name: ${{ needs.tag.outputs.new_tag }}
-          body: |
-            ${{ needs.tag.outputs.changelog }}
-
-            ## Docker
-
-            ```
-            docker pull ghcr.io/${{ inputs.image-name }}:${{ needs.tag.outputs.new_version }}
-            ```
-
   deploy:
-    needs: [tag, publish]
-    if: needs.tag.outputs.new_tag != ''
+    needs: [release, transform, build]
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.transform.outputs.build_matrix) }}
     uses: Skesov/github-workflows/.github/workflows/_deploy.yml@master
     with:
-      version: ${{ needs.tag.outputs.new_version }}
+      version: ${{ matrix.version }}
       homelab-repo: ${{ inputs.homelab-repo }}
-      manifest-path: ${{ inputs.manifest-path }}
-      tag-paths: ${{ inputs.tag-paths }}
+      manifest-path: ${{ matrix.manifest-path }}
+      tag-paths: ${{ matrix.tag-paths }}
       environment: ${{ inputs.environment }}
     secrets:
       gitops-token: ${{ secrets.gitops-token }}

@@ -10,24 +10,43 @@ Two layers:
 
 **Primitives** (`_*.yml`) — single-purpose reusable workflows. Underscore prefix signals internal use.
 
-Pipeline order in `cd.yml`:
+`cd.yml` job graph:
 
 ```text
-lint + test (parallel) → tag → build → push → publish → deploy
+lint ┐
+test ┴→ release → transform → build (matrix) → deploy (matrix)
 ```
 
-The `deploy` step updates the image tag in `Skesov/homelab` using `yq` and pushes a commit. Flux CD picks up the change automatically.
+`release` runs `googleapis/release-please-action@v5` after lint and test pass.
+On a typical push it only opens or updates the release PR — `transform`/`build`/`deploy`
+are skipped. When a release PR is merged, the action creates per-component tags and
+GitHub Releases, and `transform` reads those outputs + caller's `images:` spec to
+build the matrix that drives `build` and `deploy`.
+
+Gating `release` on `lint`+`test` prevents tag creation against a broken master.
+
+The `deploy` matrix uses `max-parallel: 1` to serialize commits against `Skesov/homelab`.
 
 ## Conventions
 
-- Primitive job names differ from orchestrator job names to avoid triple-nesting (`cd / lint / lint`) in GitHub Actions UI. Mapping: `_tag.yml` → `bump`, `_docker.yml` → `push`, `_deploy.yml` → `run`.
+- Primitive job names differ from orchestrator job names to avoid triple-nesting (`cd / lint / lint`) in GitHub Actions UI. Mapping: `_release.yml` → `run`, `_docker.yml` → `push`, `_deploy.yml` → `run`.
 - Pin all `uses:` references to a version tag. Verify the latest with:
 
   ```bash
   gh release view --repo owner/action --json tagName -q .tagName
   ```
 
-- `homelab-repo` defaults to `Skesov/homelab`. `manifest-path` is always required — it differs per project.
+- `homelab-repo` defaults to `Skesov/homelab`. `manifest-path` is required per component (either at top level or inside each `images[]` entry).
+- Multi-image callers set `images:` (YAML list) and link each entry to a release-please package via `package-path`.
+
+## Caller requirements
+
+Every consumer of `cd.yml` must commit:
+
+- `release-please-config.json` — package definitions
+- `.release-please-manifest.json` — current versions
+
+And grant `permissions: pull-requests: write` (in addition to the existing `contents: write` and `packages: write`) on the calling job.
 
 ## Validation
 
@@ -35,10 +54,10 @@ Run both before pushing any workflow change:
 
 ```bash
 # YAML syntax and style
-docker run --rm -v $(pwd):/repo cytopia/yamllint:latest -c /repo/.yamllint.yml /repo/.github/workflows/
+docker run --rm -v "$(pwd):/repo" cytopia/yamllint:latest -c /repo/.yamllint.yml /repo/.github/workflows/
 
 # GitHub Actions semantics
-docker run --rm -v $(pwd):/repo rhysd/actionlint:latest -color /repo/.github/workflows/
+docker run --rm -v "$(pwd):/repo" --workdir /repo rhysd/actionlint:latest -color
 ```
 
 CI runs both automatically on push and pull request via `validate.yml`.
