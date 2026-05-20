@@ -35,6 +35,10 @@ on:
         description: "Optional GHA build cache scope (set when one repo builds multiple images)."
         type: string
         default: ""
+      push-latest:
+        description: "Also tag and push the image as :latest. Disable for staging/PR builds."
+        type: boolean
+        default: false
     secrets:
       registry-token:
         description: "Token for container registry auth"
@@ -66,7 +70,7 @@ jobs:
           images: ${{ inputs.registry }}/${{ inputs.image-name }}
           tags: |
             type=raw,value=${{ inputs.version }}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ inputs.push-latest }}
 
       - uses: docker/build-push-action@v7
         with:

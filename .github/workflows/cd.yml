@@ -283,6 +283,7 @@ jobs:
       build-args: ${{ matrix.build-args }}
       cache-scope: ${{ matrix.cache-scope }}
       platforms: ${{ matrix.platforms }}
+      push-latest: true
     secrets:
       registry-token: ${{ secrets.registry-token }}
 
