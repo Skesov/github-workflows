@@ -38,15 +38,16 @@ The `deploy` matrix uses `max-parallel: 1` to serialize commits against `Skesov/
 
 - `homelab-repo` defaults to `Skesov/homelab`. `manifest-path` is required per component (either at top level or inside each `images[]` entry).
 - Multi-image callers set `images:` (YAML list) and link each entry to a release-please package via `package-path`.
+- `_docker.yml` runs on `ubuntu-24.04-arm` and builds `linux/arm64` by default — matches the arm-only target cluster. Override `runner`/`platforms` per call to build for amd64 (cross-compiled via QEMU).
 
 ## Caller requirements
 
-Every consumer of `cd.yml` must commit:
+Every consumer of `cd.yml` must:
 
-- `release-please-config.json` — package definitions
-- `.release-please-manifest.json` — current versions
-
-And grant `permissions: pull-requests: write` (in addition to the existing `contents: write` and `packages: write`) on the calling job.
+- Commit `release-please-config.json` and `.release-please-manifest.json` at the repo root
+- Grant `permissions: pull-requests: write` (in addition to the existing `contents: write` and `packages: write`) on the calling job
+- Pass `secrets:` explicitly — `secrets: inherit` does not match the hyphenated `registry-token`/`gitops-token` parameter names
+- Enable "Allow GitHub Actions to create and approve pull requests" in repo settings — release-please cannot open its release PR otherwise
 
 ## Validation
 

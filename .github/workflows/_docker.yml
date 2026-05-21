@@ -16,9 +16,13 @@ on:
         type: string
         required: true
       platforms:
-        description: "Target platforms (comma-separated)"
+        description: "Target platforms (comma-separated). Default arm64 matches the native arm runner."
         type: string
-        default: "linux/amd64,linux/arm64"
+        default: "linux/arm64"
+      runner:
+        description: "GitHub-hosted runner label. Default builds natively for arm64."
+        type: string
+        default: "ubuntu-24.04-arm"
       context:
         description: "Docker build context path"
         type: string
@@ -50,7 +54,7 @@ permissions:
 
 jobs:
   push:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@v6
 
