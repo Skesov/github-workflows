@@ -6,15 +6,15 @@ Powered by [release-please](https://github.com/googleapis/release-please-action)
 
 ## Workflows
 
-| Workflow       | Type         | Purpose                                          |
-| -------------- | ------------ | ------------------------------------------------ |
-| `ci.yml`       | Orchestrator | Lint + test (for pull requests)                  |
-| `cd.yml`       | Orchestrator | Release-please → lint + test → build → deploy    |
-| `_lint.yml`    | Primitive    | Python lint with ruff via uv                     |
-| `_test.yml`    | Primitive    | Python tests with pytest via uv                  |
-| `_docker.yml`  | Primitive    | Multi-arch Docker build and push to ghcr.io      |
-| `_release.yml` | Primitive    | Wraps `googleapis/release-please-action`         |
-| `_deploy.yml`  | Primitive    | Update image tag in `Skesov/homelab` GitOps repo |
+| Workflow       | Type         | Purpose                                                |
+| -------------- | ------------ | ------------------------------------------------------ |
+| `ci.yml`       | Orchestrator | Lint + test (for pull requests)                        |
+| `cd.yml`       | Orchestrator | Release-please → lint + test → build → deploy          |
+| `_lint.yml`    | Primitive    | Python lint with ruff via uv                           |
+| `_test.yml`    | Primitive    | Python tests with pytest via uv                        |
+| `_docker.yml`  | Primitive    | Docker build (native arm64 runner) and push to ghcr.io |
+| `_release.yml` | Primitive    | Wraps `googleapis/release-please-action`               |
+| `_deploy.yml`  | Primitive    | Update image tag in `Skesov/homelab` GitOps repo       |
 
 Primitives can be called independently. Orchestrators compose them into a full pipeline.
 
@@ -99,12 +99,18 @@ jobs:
       ruff-paths: "src/"
       pytest-paths: "tests/"
       manifest-path: "flux/apps/my-project/helmrelease.yaml"
-    secrets: inherit
+    secrets:
+      registry-token: ${{ secrets.GITHUB_TOKEN }}
+      gitops-token: ${{ secrets.GITOPS_TOKEN }}
     permissions:
       contents: write
       packages: write
       pull-requests: write
 ```
+
+`secrets:` must be passed explicitly. GitHub secret names cannot contain hyphens,
+so `secrets: inherit` would not match the `registry-token` / `gitops-token`
+parameters and the job would fail at runtime.
 
 ### Single-image release-please config
 
@@ -118,7 +124,8 @@ For a single-image project, place these two files at the repo root:
   "packages": {
     ".": {
       "release-type": "python",
-      "package-name": "my-project"
+      "package-name": "my-project",
+      "include-component-in-tag": false
     }
   }
 }
@@ -131,6 +138,10 @@ For a single-image project, place these two files at the repo root:
 ```
 
 Tags created: `v0.2.0`, `v0.3.0`, ... (no component prefix).
+
+`include-component-in-tag: false` is required for the plain `v0.2.0` format.
+Without it release-please prefixes the tag with `package-name`, producing
+`my-project-v0.2.0`.
 
 ### Monorepo with multiple images
 
@@ -201,7 +212,9 @@ jobs:
             VITE_API_URL=https://api.example.com
           cache-scope: web
           manifest-path: flux/apps/sub-manager-bot/web.yaml
-    secrets: inherit
+    secrets:
+      registry-token: ${{ secrets.GITHUB_TOKEN }}
+      gitops-token: ${{ secrets.GITOPS_TOKEN }}
     permissions:
       contents: write
       packages: write
@@ -259,11 +272,11 @@ match release-please config), `context`, `dockerfile`, `build-args`, `cache-scop
 
 #### Shared
 
-| Input          | Type   | Default                     | Description                             |
-| -------------- | ------ | --------------------------- | --------------------------------------- |
-| `platforms`    | string | `"linux/amd64,linux/arm64"` | Default platforms (per-image override)  |
-| `homelab-repo` | string | `"Skesov/homelab"`          | GitOps repo to update                   |
-| `environment`  | string | `"production"`              | GitHub Environment for protection rules |
+| Input          | Type   | Default            | Description                             |
+| -------------- | ------ | ------------------ | --------------------------------------- |
+| `platforms`    | string | `"linux/arm64"`    | Default platforms (per-image override)  |
+| `homelab-repo` | string | `"Skesov/homelab"` | GitOps repo to update                   |
+| `environment`  | string | `"production"`     | GitHub Environment for protection rules |
 
 #### Release-please
 
@@ -280,10 +293,13 @@ match release-please config), `context`, `dockerfile`, `build-args`, `cache-scop
 | `registry-token` | `cd.yml` | `GITHUB_TOKEN` — push to ghcr.io           |
 | `gitops-token`   | `cd.yml` | PAT with `contents: write` on homelab repo |
 
-All workflows use `secrets: inherit`. Any repo secret is automatically
-exported as an environment variable in the pytest step via `toJSON(secrets)`.
-No workflow changes needed when adding new secrets — set the secret on the
-caller repo and tests pick it up.
+`ci.yml` accepts `secrets: inherit` — any caller repo secret becomes an env
+var in the pytest step via `toJSON(secrets)`. Useful for test fixtures that
+read API keys from the environment.
+
+`cd.yml` requires explicit `secrets:` mapping (see examples above). The
+`toJSON(secrets)` auto-export inside `cd.yml`'s pytest step only sees the
+two declared secrets; route any extra test secrets through `ci.yml` on PRs.
 
 ## Migrating from the old `cd.yml` (mathieudutour)
 
@@ -293,15 +309,36 @@ and a release-PR pattern.
 
 For each caller repo:
 
-1. Add `release-please-config.json` and `.release-please-manifest.json` at the
+1. Enable "Allow GitHub Actions to create and approve pull requests" at
+   `https://github.com/<owner>/<repo>/settings/actions`, or via API:
+
+   ```bash
+   gh api -X PUT /repos/<owner>/<repo>/actions/permissions/workflow \
+     -F can_approve_pull_request_reviews=true
+   ```
+
+   Release-please cannot open the release PR without this — the first run
+   will fail with
+   `GitHub Actions is not permitted to create or approve pull requests`.
+
+2. Add `release-please-config.json` and `.release-please-manifest.json` at the
    repo root (see [Single-image](#single-image-release-please-config) or
    [Monorepo](#monorepo-with-multiple-images)).
-2. Set the initial manifest version to your current tag's version (without `v`).
-3. Update the caller workflow's `permissions:` block to add `pull-requests: write`.
-4. Remove the `default-bump` input from the `cd.yml` call (no longer supported —
+3. Set the initial manifest version to your current tag's version (without `v`).
+4. Update the caller workflow's `permissions:` block to add `pull-requests: write`.
+5. Replace `secrets: inherit` with explicit mapping in the `cd.yml` call (see
+   examples above) — `inherit` does not match hyphenated secret parameter names.
+6. Remove the `default-bump` input from the `cd.yml` call (no longer supported —
    release-please derives bump from conventional commits).
-5. First push after migration opens a release PR; merge it to trigger the actual
+7. First push after migration opens a release PR; merge it to trigger the actual
    release. Subsequent commits update the PR until merged.
 
-Tag format stays `v1.2.3` for single-image repos. Monorepo repos move to
+Tag format stays `v1.2.3` for single-image repos (requires
+`include-component-in-tag: false` in the config). Monorepo repos move to
 `bot-v1.2.3` / `web-v0.5.1` style via `include-component-in-tag: true`.
+
+The first release after migration includes the entire commit history in
+`CHANGELOG.md` (release-please has no prior tag to diff against). The
+`Compare: v0.4.x...v0.5.0` link in the PR header is correct; only the body
+is bloated. Edit the release PR before merging if you want a shorter
+changelog.

@@ -67,9 +67,9 @@ on:
 
       # === Shared ===
       platforms:
-        description: "Default target platforms (comma-separated). Overridable per-image."
+        description: "Default target platforms (comma-separated). Overridable per-image. Default: arm64 only."
         type: string
-        default: "linux/amd64,linux/arm64"
+        default: "linux/arm64"
       homelab-repo:
         description: "GitOps repo to update"
         type: string
