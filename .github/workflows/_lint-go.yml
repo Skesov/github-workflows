@@ -1,0 +1,41 @@
+name: Reusable Lint (Go)
+
+on:
+  workflow_call:
+    inputs:
+      go-version:
+        description: "Go version (or 'stable' for the latest)"
+        type: string
+        default: "stable"
+      working-directory:
+        description: "Working directory (where go.mod lives)"
+        type: string
+        default: "."
+      golangci-lint-version:
+        description: "golangci-lint version tag (e.g. v2.3.0)"
+        type: string
+        default: "latest"
+      args:
+        description: "Extra args passed to golangci-lint run"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6.4.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+
+      - uses: golangci/golangci-lint-action@v9.2.1
+        with:
+          version: ${{ inputs.golangci-lint-version }}
+          working-directory: ${{ inputs.working-directory }}
+          args: ${{ inputs.args }}

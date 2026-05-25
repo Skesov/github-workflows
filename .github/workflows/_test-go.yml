@@ -1,0 +1,71 @@
+name: Reusable Test (Go)
+
+on:
+  workflow_call:
+    inputs:
+      go-version:
+        description: "Go version (or 'stable' for the latest)"
+        type: string
+        default: "stable"
+      working-directory:
+        description: "Working directory (where go.mod lives)"
+        type: string
+        default: "."
+      test-paths:
+        description: "Packages to test"
+        type: string
+        default: "./..."
+      test-args:
+        description: "Extra args for `go test`"
+        type: string
+        default: "-race -cover"
+      test-env:
+        description: 'Env vars as JSON, e.g. {"KEY": "value"}'
+        type: string
+        default: "{}"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6.4.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+
+      - name: Export secrets to env
+        env:
+          _SECRETS: ${{ toJSON(secrets) }}
+        run: |
+          echo "$_SECRETS" \
+            | jq -r 'to_entries[]
+                | select(.key != "github_token")
+                | "\(.key)=\(.value)"' \
+            >> "$GITHUB_ENV"
+        shell: bash
+        working-directory: .
+
+      - name: Export test-env to env
+        if: inputs.test-env != '{}'
+        env:
+          TEST_ENV: ${{ inputs.test-env }}
+        run: echo "$TEST_ENV" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+        shell: bash
+        working-directory: .
+
+      - name: go test
+        env:
+          TEST_PATHS: ${{ inputs.test-paths }}
+          TEST_ARGS: ${{ inputs.test-args }}
+        run: |
+          # shellcheck disable=SC2086
+          go test $TEST_ARGS $TEST_PATHS
+        shell: bash
