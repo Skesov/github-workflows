@@ -1,4 +1,4 @@
-name: Reusable Lint (Python + ruff)
+name: Reusable Lint (Python)
 
 on:
   workflow_call:

@@ -1,4 +1,4 @@
-name: Reusable Test (Python + pytest)
+name: Reusable Test (Python)
 
 on:
   workflow_call:
