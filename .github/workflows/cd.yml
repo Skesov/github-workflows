@@ -3,85 +3,25 @@ name: Reusable CD
 on:
   workflow_call:
     inputs:
-      # === Lint / test ===
-      python-version:
-        description: "Python version for uv"
-        type: string
-        default: "3.12"
-      ruff-paths:
-        description: "Paths to lint (space-separated)"
-        type: string
-        default: "."
-      pytest-paths:
-        description: "Paths to test (space-separated)"
-        type: string
-        default: "."
-      pytest-args:
-        description: "Extra pytest arguments"
-        type: string
-        default: ""
-      pytest-env:
-        description: 'Environment variables for pytest as JSON (e.g. {"KEY": "value"})'
-        type: string
-        default: "{}"
-
-      # === Single-image mode (used when `images` is empty) ===
-      image-name:
-        description: "Docker image name (e.g. owner/repo). Required when `images` is empty."
-        type: string
-        default: ""
-      docker-context:
-        description: "Docker build context path"
-        type: string
-        default: "."
-      dockerfile:
-        description: "Path to Dockerfile (relative to repo root). Empty means <context>/Dockerfile."
-        type: string
-        default: ""
-      build-args:
-        description: "Newline-separated KEY=value build args"
-        type: string
-        default: ""
-      cache-scope:
-        description: "Optional GHA build cache scope"
-        type: string
-        default: ""
-      manifest-path:
-        description: "Path to HelmRelease file in homelab repo. Required when `images` is empty."
-        type: string
-        default: ""
-      tag-paths:
-        description: "Newline-separated yq paths to update with the new version"
-        type: string
-        default: ".spec.values.image.tag"
-
-      # === Multi-image mode ===
-      images:
+      components:
         description: |
-          Optional YAML list of component image specs. When set, takes priority over single-image inputs.
-          Each entry: { name, package-path, context?, dockerfile?, build-args?, cache-scope?,
-                        manifest-path, tag-paths?, platforms? }
-          `package-path` must match a key in release-please-config.json.
+          YAML list of components. Each entry:
+            name:          logical name (matrix key, dorny filter id, must be unique)
+            stack:         python | node | go
+            paths:         [glob, ...] for dorny/paths-filter
+            package-path:  release-please key (must match release-please-config.json)
+            setup:         per-stack setup (python-version | node-version | go-version,
+                           package-manager [node], working-directory [any], install-command [node])
+            lint:          lint config (paths [python|go], commands [node], args/version [go])
+            test:          test config (paths [python|go], commands [node], args, env,
+                           e2e-command [node], playwright [node], playwright-report-path [node])
+            image:         { name, context, dockerfile, build-args, cache-scope, platforms }
+            deploy:        { manifest-path, tag-paths }
+          See README for a full example.
         type: string
-        default: ""
-
-      # === Shared ===
-      platforms:
-        description: "Default target platforms (comma-separated). Overridable per-image. Default: arm64 only."
-        type: string
-        default: "linux/arm64"
-      homelab-repo:
-        description: "GitOps repo to update"
-        type: string
-        default: "Skesov/homelab"
-      environment:
-        description: "GitHub Environment name for protection rules"
-        type: string
-        default: "production"
-
-      # === Release-please ===
+        required: true
       target-branch:
-        description: "Branch to release from"
+        description: "Branch release-please tracks"
         type: string
         default: "master"
       release-config-file:
@@ -92,7 +32,18 @@ on:
         description: "Path to .release-please-manifest.json (empty = repo default)"
         type: string
         default: ""
-
+      homelab-repo:
+        description: "GitOps repo to update"
+        type: string
+        default: "Skesov/homelab"
+      environment:
+        description: "GitHub Environment for deploy job"
+        type: string
+        default: "production"
+      default-platforms:
+        description: "Default Docker platforms when component doesn't specify"
+        type: string
+        default: "linux/arm64"
     secrets:
       registry-token:
         description: "Token for container registry auth"
@@ -100,13 +51,12 @@ on:
       gitops-token:
         description: "GitHub PAT with write access to homelab repo"
         required: true
-
     outputs:
       releases_created:
         description: "true if any release was created"
         value: ${{ jobs.release.outputs.releases_created }}
       released_packages:
-        description: "JSON array of released packages (see _release.yml outputs)"
+        description: "JSON array of released packages"
         value: ${{ jobs.release.outputs.released_packages }}
 
 permissions:
@@ -115,69 +65,234 @@ permissions:
   pull-requests: write
 
 jobs:
-  lint:
+  # Detect which components changed and build per-stack lint/test matrices.
+  # dorny/paths-filter compares against the previous commit on push.
+  changes:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      python_lint_count: ${{ steps.matrices.outputs.python_lint_count }}
+      python_lint_matrix: ${{ steps.matrices.outputs.python_lint_matrix }}
+      python_test_count: ${{ steps.matrices.outputs.python_test_count }}
+      python_test_matrix: ${{ steps.matrices.outputs.python_test_matrix }}
+      node_lint_count: ${{ steps.matrices.outputs.node_lint_count }}
+      node_lint_matrix: ${{ steps.matrices.outputs.node_lint_matrix }}
+      node_test_count: ${{ steps.matrices.outputs.node_test_count }}
+      node_test_matrix: ${{ steps.matrices.outputs.node_test_matrix }}
+      go_lint_count: ${{ steps.matrices.outputs.go_lint_count }}
+      go_lint_matrix: ${{ steps.matrices.outputs.go_lint_matrix }}
+      go_test_count: ${{ steps.matrices.outputs.go_test_count }}
+      go_test_matrix: ${{ steps.matrices.outputs.go_test_matrix }}
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
-        with:
-          python-version: ${{ inputs.python-version }}
-      - run: uv sync --frozen --dev
-      - name: ruff check
-        env:
-          RUFF_PATHS: ${{ inputs.ruff-paths }}
-        run: uv run ruff check "$RUFF_PATHS"
-      - name: ruff format
-        env:
-          RUFF_PATHS: ${{ inputs.ruff-paths }}
-        run: uv run ruff format --check "$RUFF_PATHS"
 
-  test:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
-        with:
-          python-version: ${{ inputs.python-version }}
-      - run: uv sync --frozen --dev
-      - name: Export secrets to env
+      - name: Build dorny/paths-filter config from components
+        id: filter_cfg
         env:
-          _SECRETS: ${{ toJSON(secrets) }}
+          COMPONENTS: ${{ inputs.components }}
         run: |
-          echo "$_SECRETS" \
-            | jq -r 'to_entries[]
-                | select(.key != "github_token")
-                | "\(.key)=\(.value)"' \
-            >> "$GITHUB_ENV"
+          set -euo pipefail
+          # Convert components YAML to dorny YAML map: name -> paths[]
+          filters=$(yq -o=yaml '
+            [.[] | {(.name): .paths}] | add // {}
+          ' <<<"$COMPONENTS")
+          {
+            echo "filters<<DORNY_EOF"
+            echo "$filters"
+            echo "DORNY_EOF"
+          } >> "$GITHUB_OUTPUT"
         shell: bash
 
-      - name: Export pytest-env to env
-        if: inputs.pytest-env != '{}'
+      - uses: dorny/paths-filter@v4.0.1
+        id: filter
+        with:
+          filters: ${{ steps.filter_cfg.outputs.filters }}
+
+      - name: Build per-stack lint/test matrices
+        id: matrices
         env:
-          PYTEST_ENV: ${{ inputs.pytest-env }}
-        run: echo "$PYTEST_ENV" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+          COMPONENTS: ${{ inputs.components }}
+          CHANGED: ${{ steps.filter.outputs.changes }}
+          MATRIX_JQ: |
+            def changed_only(s):
+              [.[] | select(.stack == s and (.name | IN($changed[])))];
+            {
+              python_lint: (changed_only("python") | map({
+                name,
+                python_version: (.setup["python-version"] // "3.12"),
+                ruff_paths: (.lint.paths // ".")
+              })),
+              python_test: (changed_only("python") | map({
+                name,
+                python_version: (.setup["python-version"] // "3.12"),
+                pytest_paths: (.test.paths // "."),
+                pytest_args: (.test.args // ""),
+                pytest_env: ((.test.env // {}) | tostring)
+              })),
+              node_lint: (changed_only("node") | map({
+                name,
+                node_version: (.setup["node-version"] // "22"),
+                package_manager: (.setup["package-manager"] // "pnpm"),
+                working_directory: (.setup["working-directory"] // "."),
+                install_command: (.setup["install-command"] // ""),
+                lint_commands: (.lint.commands // "")
+              })),
+              node_test: (changed_only("node") | map({
+                name,
+                node_version: (.setup["node-version"] // "22"),
+                package_manager: (.setup["package-manager"] // "pnpm"),
+                working_directory: (.setup["working-directory"] // "."),
+                install_command: (.setup["install-command"] // ""),
+                test_commands: (.test.commands // ""),
+                test_env: ((.test.env // {}) | tostring),
+                e2e_command: (.test["e2e-command"] // ""),
+                playwright: (.test.playwright // false),
+                playwright_report_path: (.test["playwright-report-path"] // "playwright-report/")
+              })),
+              go_lint: (changed_only("go") | map({
+                name,
+                go_version: (.setup["go-version"] // "stable"),
+                working_directory: (.setup["working-directory"] // "."),
+                golangci_version: (.lint.version // "latest"),
+                lint_args: (.lint.args // "")
+              })),
+              go_test: (changed_only("go") | map({
+                name,
+                go_version: (.setup["go-version"] // "stable"),
+                working_directory: (.setup["working-directory"] // "."),
+                test_paths: (.test.paths // "./..."),
+                test_args: (.test.args // "-race -cover"),
+                test_env: ((.test.env // {}) | tostring)
+              }))
+            }
+          VALIDATE_JQ: |
+            [.[] | select(.stack != "python" and .stack != "node" and .stack != "go") | .name]
+            | join(",")
+        run: |
+          set -euo pipefail
+          components_json=$(yq -o=json . <<<"$COMPONENTS")
+          unknown=$(jq -r "$VALIDATE_JQ" <<<"$components_json")
+          if [ -n "$unknown" ]; then
+            echo "::error::Unknown stack for components: $unknown (expected python|node|go)"
+            exit 1
+          fi
+          all=$(jq -c --argjson changed "$CHANGED" "$MATRIX_JQ" <<<"$components_json")
+          for key in python_lint python_test node_lint node_test go_lint go_test; do
+            items=$(jq -c ".${key}" <<<"$all")
+            count=$(jq 'length' <<<"$items")
+            echo "${key}_count=${count}" >> "$GITHUB_OUTPUT"
+            if [ "$count" -gt 0 ]; then
+              matrix=$(jq -c --argjson items "$items" -n '{include: $items}')
+            else
+              matrix='{"include":[]}'
+            fi
+            {
+              echo "${key}_matrix<<MATRIX_EOF"
+              echo "$matrix"
+              echo "MATRIX_EOF"
+            } >> "$GITHUB_OUTPUT"
+          done
         shell: bash
 
-      - name: pytest
-        env:
-          PYTEST_PATHS: ${{ inputs.pytest-paths }}
-          PYTEST_ARGS: ${{ inputs.pytest-args }}
-        run: |
-          # shellcheck disable=SC2086
-          uv run pytest "$PYTEST_PATHS" $PYTEST_ARGS
+  lint-python:
+    needs: changes
+    if: needs.changes.outputs.python_lint_count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.python_lint_matrix) }}
+    uses: ./.github/workflows/_lint-python.yml
+    with:
+      python-version: ${{ matrix.python_version }}
+      ruff-paths: ${{ matrix.ruff_paths }}
 
+  test-python:
+    needs: changes
+    if: needs.changes.outputs.python_test_count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.python_test_matrix) }}
+    uses: ./.github/workflows/_test-python.yml
+    with:
+      python-version: ${{ matrix.python_version }}
+      pytest-paths: ${{ matrix.pytest_paths }}
+      pytest-args: ${{ matrix.pytest_args }}
+      pytest-env: ${{ matrix.pytest_env }}
+    secrets: inherit
+
+  lint-node:
+    needs: changes
+    if: needs.changes.outputs.node_lint_count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.node_lint_matrix) }}
+    uses: ./.github/workflows/_lint-node.yml
+    with:
+      node-version: ${{ matrix.node_version }}
+      package-manager: ${{ matrix.package_manager }}
+      working-directory: ${{ matrix.working_directory }}
+      install-command: ${{ matrix.install_command }}
+      lint-commands: ${{ matrix.lint_commands }}
+
+  test-node:
+    needs: changes
+    if: needs.changes.outputs.node_test_count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.node_test_matrix) }}
+    uses: ./.github/workflows/_test-node.yml
+    with:
+      node-version: ${{ matrix.node_version }}
+      package-manager: ${{ matrix.package_manager }}
+      working-directory: ${{ matrix.working_directory }}
+      install-command: ${{ matrix.install_command }}
+      test-commands: ${{ matrix.test_commands }}
+      test-env: ${{ matrix.test_env }}
+      e2e-command: ${{ matrix.e2e_command }}
+      playwright: ${{ matrix.playwright }}
+      playwright-report-path: ${{ matrix.playwright_report_path }}
+    secrets: inherit
+
+  lint-go:
+    needs: changes
+    if: needs.changes.outputs.go_lint_count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.go_lint_matrix) }}
+    uses: ./.github/workflows/_lint-go.yml
+    with:
+      go-version: ${{ matrix.go_version }}
+      working-directory: ${{ matrix.working_directory }}
+      golangci-lint-version: ${{ matrix.golangci_version }}
+      args: ${{ matrix.lint_args }}
+
+  test-go:
+    needs: changes
+    if: needs.changes.outputs.go_test_count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.go_test_matrix) }}
+    uses: ./.github/workflows/_test-go.yml
+    with:
+      go-version: ${{ matrix.go_version }}
+      working-directory: ${{ matrix.working_directory }}
+      test-paths: ${{ matrix.test_paths }}
+      test-args: ${{ matrix.test_args }}
+      test-env: ${{ matrix.test_env }}
+    secrets: inherit
+
+  # Release gate: run only when none of the lint/test jobs failed.
+  # Skipped jobs (empty matrices) count as passing.
   release:
-    needs: [lint, test]
-    uses: Skesov/github-workflows/.github/workflows/_release.yml@master
+    needs: [lint-python, test-python, lint-node, test-node, lint-go, test-go]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
+    uses: ./.github/workflows/_release.yml
     with:
       target-branch: ${{ inputs.target-branch }}
       config-file: ${{ inputs.release-config-file }}
       manifest-file: ${{ inputs.release-manifest-file }}
 
+  # Build the docker matrix from components, keeping only released ones.
   transform:
     needs: release
     if: needs.release.outputs.releases_created == 'true'
@@ -185,83 +300,47 @@ jobs:
     outputs:
       build_matrix: ${{ steps.t.outputs.build_matrix }}
     steps:
-      - name: Build matrix from images / single-image inputs
+      - name: Build docker matrix from components + released packages
         id: t
         env:
-          IMAGES: ${{ inputs.images }}
-          SINGLE_NAME: ${{ inputs.image-name }}
-          SINGLE_CONTEXT: ${{ inputs.docker-context }}
-          SINGLE_DOCKERFILE: ${{ inputs.dockerfile }}
-          SINGLE_BUILD_ARGS: ${{ inputs.build-args }}
-          SINGLE_CACHE_SCOPE: ${{ inputs.cache-scope }}
-          SINGLE_MANIFEST: ${{ inputs.manifest-path }}
-          SINGLE_TAG_PATHS: ${{ inputs.tag-paths }}
-          PLATFORMS: ${{ inputs.platforms }}
+          COMPONENTS: ${{ inputs.components }}
           RELEASED: ${{ needs.release.outputs.released_packages }}
+          DEFAULT_PLATFORMS: ${{ inputs.default-platforms }}
+          BUILD_MATRIX_JQ: |
+            {
+              include: [
+                $components[] as $c
+                | ($released[] | select(.path == $c["package-path"])) as $r
+                | {
+                    name:            $c.image.name,
+                    context:         ($c.image.context // "."),
+                    dockerfile:      ($c.image.dockerfile // ""),
+                    "build-args":    ($c.image["build-args"] // ""),
+                    "cache-scope":   ($c.image["cache-scope"] // ""),
+                    "manifest-path": $c.deploy["manifest-path"],
+                    "tag-paths":     ($c.deploy["tag-paths"] // ".spec.values.image.tag"),
+                    platforms:       ($c.image.platforms // $default_platforms),
+                    version:         $r.version,
+                    tag:             $r.tag
+                  }
+              ]
+            }
         run: |
           set -euo pipefail
-
-          if [ -n "$IMAGES" ]; then
-            specs=$(yq -o=json '.' <<<"$IMAGES")
-          else
-            if [ -z "$SINGLE_NAME" ] || [ -z "$SINGLE_MANIFEST" ]; then
-              echo "::error::Either 'images' or both 'image-name' and 'manifest-path' must be set"
-              exit 1
-            fi
-            specs=$(jq -nc \
-              --arg name "$SINGLE_NAME" \
-              --arg ctx "$SINGLE_CONTEXT" \
-              --arg dfile "$SINGLE_DOCKERFILE" \
-              --arg args "$SINGLE_BUILD_ARGS" \
-              --arg scope "$SINGLE_CACHE_SCOPE" \
-              --arg mfest "$SINGLE_MANIFEST" \
-              --arg tpaths "$SINGLE_TAG_PATHS" \
-              '[{
-                name: $name,
-                "package-path": ".",
-                context: $ctx,
-                dockerfile: $dfile,
-                "build-args": $args,
-                "cache-scope": $scope,
-                "manifest-path": $mfest,
-                "tag-paths": $tpaths
-              }]')
-          fi
-
+          components_json=$(yq -o=json . <<<"$COMPONENTS")
           matrix=$(jq -nc \
-            --argjson specs "$specs" \
+            --argjson components "$components_json" \
             --argjson released "$RELEASED" \
-            --arg platforms "$PLATFORMS" '
-              {
-                include: [
-                  $specs[] as $s
-                  | ($released[] | select(.path == $s["package-path"])) as $r
-                  | {
-                      name:          $s.name,
-                      context:       ($s.context // "."),
-                      dockerfile:    ($s.dockerfile // ""),
-                      "build-args":  ($s["build-args"] // ""),
-                      "cache-scope": ($s["cache-scope"] // ""),
-                      "manifest-path": $s["manifest-path"],
-                      "tag-paths":   ($s["tag-paths"] // ".spec.values.image.tag"),
-                      platforms:     ($s.platforms // $platforms),
-                      version:       $r.version,
-                      tag:           $r.tag
-                    }
-                ]
-              }
-          ')
-
+            --arg default_platforms "$DEFAULT_PLATFORMS" \
+            "$BUILD_MATRIX_JQ")
           count=$(jq '.include | length' <<<"$matrix")
           echo "Matrix entries: $count"
-          jq '.' <<<"$matrix"
-
+          jq . <<<"$matrix"
           if [ "$count" = "0" ]; then
-            echo "::error::Release created but no image spec matched a released package-path."
-            echo "::error::Check 'images[*].package-path' against release-please-config.json packages."
+            echo "::error::Release created but no component matched a released package-path."
+            echo "::error::Check components[*].package-path against release-please-config.json."
             exit 1
           fi
-
           {
             echo "build_matrix<<EOF"
             echo "$matrix"
@@ -274,7 +353,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.transform.outputs.build_matrix) }}
-    uses: Skesov/github-workflows/.github/workflows/_docker.yml@master
+    uses: ./.github/workflows/_docker.yml
     with:
       image-name: ${{ matrix.name }}
       version: ${{ matrix.version }}
@@ -293,7 +372,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix: ${{ fromJSON(needs.transform.outputs.build_matrix) }}
-    uses: Skesov/github-workflows/.github/workflows/_deploy.yml@master
+    uses: ./.github/workflows/_deploy.yml
     with:
       version: ${{ matrix.version }}
       homelab-repo: ${{ inputs.homelab-repo }}
