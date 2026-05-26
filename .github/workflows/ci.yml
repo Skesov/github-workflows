@@ -3,78 +3,249 @@ name: Reusable CI
 on:
   workflow_call:
     inputs:
-      python-version:
-        description: "Python version for uv"
+      components:
+        description: |
+          YAML list of components (same shape as cd.yml). Each entry:
+            name, stack (python|node|go), paths, setup, lint, test.
+          Fields not used by ci.yml (package-path, image, deploy) are ignored.
         type: string
-        default: "3.12"
-      ruff-paths:
-        description: "Paths to lint (space-separated)"
-        type: string
-        default: "."
-      pytest-paths:
-        description: "Paths to test (space-separated)"
-        type: string
-        default: "."
-      pytest-args:
-        description: "Extra pytest arguments"
-        type: string
-        default: ""
-      pytest-env:
-        description: 'Environment variables for pytest as JSON (e.g. {"KEY": "value"})'
-        type: string
-        default: "{}"
+        required: true
 
 permissions:
   contents: read
 
 jobs:
-  lint:
+  changes:
     runs-on: ubuntu-latest
+    outputs:
+      python_lint_count: ${{ steps.matrices.outputs.python_lint_count }}
+      python_lint_matrix: ${{ steps.matrices.outputs.python_lint_matrix }}
+      python_test_count: ${{ steps.matrices.outputs.python_test_count }}
+      python_test_matrix: ${{ steps.matrices.outputs.python_test_matrix }}
+      node_lint_count: ${{ steps.matrices.outputs.node_lint_count }}
+      node_lint_matrix: ${{ steps.matrices.outputs.node_lint_matrix }}
+      node_test_count: ${{ steps.matrices.outputs.node_test_count }}
+      node_test_matrix: ${{ steps.matrices.outputs.node_test_matrix }}
+      go_lint_count: ${{ steps.matrices.outputs.go_lint_count }}
+      go_lint_matrix: ${{ steps.matrices.outputs.go_lint_matrix }}
+      go_test_count: ${{ steps.matrices.outputs.go_test_count }}
+      go_test_matrix: ${{ steps.matrices.outputs.go_test_matrix }}
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
-        with:
-          python-version: ${{ inputs.python-version }}
-      - run: uv sync --frozen --dev
-      - name: ruff check
-        env:
-          RUFF_PATHS: ${{ inputs.ruff-paths }}
-        run: uv run ruff check "$RUFF_PATHS"
-      - name: ruff format
-        env:
-          RUFF_PATHS: ${{ inputs.ruff-paths }}
-        run: uv run ruff format --check "$RUFF_PATHS"
 
-  test:
+      - name: Build dorny/paths-filter config from components
+        id: filter_cfg
+        env:
+          COMPONENTS: ${{ inputs.components }}
+        run: |
+          set -euo pipefail
+          filters=$(yq -o=yaml '
+            [.[] | {(.name): .paths}] | add // {}
+          ' <<<"$COMPONENTS")
+          {
+            echo "filters<<DORNY_EOF"
+            echo "$filters"
+            echo "DORNY_EOF"
+          } >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - uses: dorny/paths-filter@v4.0.1
+        id: filter
+        with:
+          filters: ${{ steps.filter_cfg.outputs.filters }}
+
+      - name: Build per-stack lint/test matrices
+        id: matrices
+        env:
+          COMPONENTS: ${{ inputs.components }}
+          CHANGED: ${{ steps.filter.outputs.changes }}
+          MATRIX_JQ: |
+            def changed_only(s):
+              [.[] | select(.stack == s and (.name | IN($changed[])))];
+            {
+              python_lint: (changed_only("python") | map({
+                name,
+                python_version: (.setup["python-version"] // "3.12"),
+                ruff_paths: (.lint.paths // ".")
+              })),
+              python_test: (changed_only("python") | map({
+                name,
+                python_version: (.setup["python-version"] // "3.12"),
+                pytest_paths: (.test.paths // "."),
+                pytest_args: (.test.args // ""),
+                pytest_env: ((.test.env // {}) | tostring)
+              })),
+              node_lint: (changed_only("node") | map({
+                name,
+                node_version: (.setup["node-version"] // "22"),
+                package_manager: (.setup["package-manager"] // "pnpm"),
+                working_directory: (.setup["working-directory"] // "."),
+                install_command: (.setup["install-command"] // ""),
+                lint_commands: (.lint.commands // "")
+              })),
+              node_test: (changed_only("node") | map({
+                name,
+                node_version: (.setup["node-version"] // "22"),
+                package_manager: (.setup["package-manager"] // "pnpm"),
+                working_directory: (.setup["working-directory"] // "."),
+                install_command: (.setup["install-command"] // ""),
+                test_commands: (.test.commands // ""),
+                test_env: ((.test.env // {}) | tostring),
+                e2e_command: (.test["e2e-command"] // ""),
+                playwright: (.test.playwright // false),
+                playwright_report_path: (.test["playwright-report-path"] // "playwright-report/")
+              })),
+              go_lint: (changed_only("go") | map({
+                name,
+                go_version: (.setup["go-version"] // "stable"),
+                working_directory: (.setup["working-directory"] // "."),
+                golangci_version: (.lint.version // "latest"),
+                lint_args: (.lint.args // "")
+              })),
+              go_test: (changed_only("go") | map({
+                name,
+                go_version: (.setup["go-version"] // "stable"),
+                working_directory: (.setup["working-directory"] // "."),
+                test_paths: (.test.paths // "./..."),
+                test_args: (.test.args // "-race -cover"),
+                test_env: ((.test.env // {}) | tostring)
+              }))
+            }
+          VALIDATE_JQ: |
+            [.[] | select(.stack != "python" and .stack != "node" and .stack != "go") | .name]
+            | join(",")
+        run: |
+          set -euo pipefail
+          components_json=$(yq -o=json . <<<"$COMPONENTS")
+          unknown=$(jq -r "$VALIDATE_JQ" <<<"$components_json")
+          if [ -n "$unknown" ]; then
+            echo "::error::Unknown stack for components: $unknown (expected python|node|go)"
+            exit 1
+          fi
+          all=$(jq -c --argjson changed "$CHANGED" "$MATRIX_JQ" <<<"$components_json")
+          for key in python_lint python_test node_lint node_test go_lint go_test; do
+            items=$(jq -c ".${key}" <<<"$all")
+            count=$(jq 'length' <<<"$items")
+            echo "${key}_count=${count}" >> "$GITHUB_OUTPUT"
+            if [ "$count" -gt 0 ]; then
+              matrix=$(jq -c --argjson items "$items" -n '{include: $items}')
+            else
+              matrix='{"include":[]}'
+            fi
+            {
+              echo "${key}_matrix<<MATRIX_EOF"
+              echo "$matrix"
+              echo "MATRIX_EOF"
+            } >> "$GITHUB_OUTPUT"
+          done
+        shell: bash
+
+  lint-python:
+    needs: changes
+    if: needs.changes.outputs.python_lint_count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.python_lint_matrix) }}
+    uses: ./.github/workflows/_lint-python.yml
+    with:
+      python-version: ${{ matrix.python_version }}
+      ruff-paths: ${{ matrix.ruff_paths }}
+
+  test-python:
+    needs: changes
+    if: needs.changes.outputs.python_test_count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.python_test_matrix) }}
+    uses: ./.github/workflows/_test-python.yml
+    with:
+      python-version: ${{ matrix.python_version }}
+      pytest-paths: ${{ matrix.pytest_paths }}
+      pytest-args: ${{ matrix.pytest_args }}
+      pytest-env: ${{ matrix.pytest_env }}
+    secrets: inherit
+
+  lint-node:
+    needs: changes
+    if: needs.changes.outputs.node_lint_count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.node_lint_matrix) }}
+    uses: ./.github/workflows/_lint-node.yml
+    with:
+      node-version: ${{ matrix.node_version }}
+      package-manager: ${{ matrix.package_manager }}
+      working-directory: ${{ matrix.working_directory }}
+      install-command: ${{ matrix.install_command }}
+      lint-commands: ${{ matrix.lint_commands }}
+
+  test-node:
+    needs: changes
+    if: needs.changes.outputs.node_test_count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.node_test_matrix) }}
+    uses: ./.github/workflows/_test-node.yml
+    with:
+      node-version: ${{ matrix.node_version }}
+      package-manager: ${{ matrix.package_manager }}
+      working-directory: ${{ matrix.working_directory }}
+      install-command: ${{ matrix.install_command }}
+      test-commands: ${{ matrix.test_commands }}
+      test-env: ${{ matrix.test_env }}
+      e2e-command: ${{ matrix.e2e_command }}
+      playwright: ${{ matrix.playwright }}
+      playwright-report-path: ${{ matrix.playwright_report_path }}
+    secrets: inherit
+
+  lint-go:
+    needs: changes
+    if: needs.changes.outputs.go_lint_count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.go_lint_matrix) }}
+    uses: ./.github/workflows/_lint-go.yml
+    with:
+      go-version: ${{ matrix.go_version }}
+      working-directory: ${{ matrix.working_directory }}
+      golangci-lint-version: ${{ matrix.golangci_version }}
+      args: ${{ matrix.lint_args }}
+
+  test-go:
+    needs: changes
+    if: needs.changes.outputs.go_test_count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.go_test_matrix) }}
+    uses: ./.github/workflows/_test-go.yml
+    with:
+      go-version: ${{ matrix.go_version }}
+      working-directory: ${{ matrix.working_directory }}
+      test-paths: ${{ matrix.test_paths }}
+      test-args: ${{ matrix.test_args }}
+      test-env: ${{ matrix.test_env }}
+    secrets: inherit
+
+  # Single required-check anchor for branch protection. Passes when every
+  # matrix job either succeeded or was skipped (empty stack matrix).
+  summary:
+    needs: [lint-python, test-python, lint-node, test-node, lint-go, test-go]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
-        with:
-          python-version: ${{ inputs.python-version }}
-      - run: uv sync --frozen --dev
-      - name: Export secrets to env
+      - name: Verify no failure or cancellation
         env:
-          _SECRETS: ${{ toJSON(secrets) }}
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          echo "$_SECRETS" \
-            | jq -r 'to_entries[]
-                | select(.key != "github_token")
-                | "\(.key)=\(.value)"' \
-            >> "$GITHUB_ENV"
+          set -euo pipefail
+          bad=$(jq -r '
+            to_entries
+            | map(select(.value.result == "failure" or .value.result == "cancelled"))
+            | map("\(.key)=\(.value.result)")
+            | join(", ")
+          ' <<<"$RESULTS")
+          if [ -n "$bad" ]; then
+            echo "::error::CI failed: $bad"
+            exit 1
+          fi
         shell: bash
-
-      - name: Export pytest-env to env
-        if: inputs.pytest-env != '{}'
-        env:
-          PYTEST_ENV: ${{ inputs.pytest-env }}
-        run: echo "$PYTEST_ENV" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
-        shell: bash
-
-      - name: pytest
-        env:
-          PYTEST_PATHS: ${{ inputs.pytest-paths }}
-          PYTEST_ARGS: ${{ inputs.pytest-args }}
-        run: |
-          # shellcheck disable=SC2086
-          uv run pytest "$PYTEST_PATHS" $PYTEST_ARGS
