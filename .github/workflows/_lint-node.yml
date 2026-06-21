@@ -56,7 +56,7 @@ jobs:
 
       - name: Setup pnpm
         if: inputs.package-manager == 'pnpm'
-        uses: pnpm/action-setup@v6.0.8
+        uses: pnpm/action-setup@v6.0.9
         with:
           package_json_file: ${{ inputs.working-directory }}/package.json
 
