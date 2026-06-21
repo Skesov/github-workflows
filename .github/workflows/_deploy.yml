@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: ${{ inputs.homelab-repo }}
           token: ${{ secrets.gitops-token }}
