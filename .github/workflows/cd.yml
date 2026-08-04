@@ -93,10 +93,12 @@ jobs:
           COMPONENTS: ${{ inputs.components }}
         run: |
           set -euo pipefail
-          # Convert components YAML to dorny YAML map: name -> paths[]
-          filters=$(yq -o=yaml '
-            [.[] | {(.name): .paths}] | add // {}
-          ' <<<"$COMPONENTS")
+          # Convert components YAML to dorny map: name -> paths[].
+          # Transform runs in jq: mikefarah yq (the runner's yq) has no
+          # `add` function — that expression is jq syntax and fails its
+          # lexer. JSON is valid YAML, so dorny accepts the jq output.
+          filters=$(yq -o=json . <<<"$COMPONENTS" \
+            | jq -c '[.[] | {(.name): .paths}] | add // {}')
           {
             echo "filters<<DORNY_EOF"
             echo "$filters"
