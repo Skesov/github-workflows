@@ -85,7 +85,7 @@ jobs:
       go_test_count: ${{ steps.matrices.outputs.go_test_count }}
       go_test_matrix: ${{ steps.matrices.outputs.go_test_matrix }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Build dorny/paths-filter config from components
         id: filter_cfg
