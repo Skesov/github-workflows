@@ -6,17 +6,22 @@ Powered by [release-please](https://github.com/googleapis/release-please-action)
 
 ## Workflows
 
-| Workflow       | Type         | Purpose                                                |
-| -------------- | ------------ | ------------------------------------------------------ |
-| `ci.yml`       | Orchestrator | Lint + test (for pull requests)                        |
-| `cd.yml`       | Orchestrator | Release-please → lint + test → build → deploy          |
-| `_lint.yml`    | Primitive    | Python lint with ruff via uv                           |
-| `_test.yml`    | Primitive    | Python tests with pytest via uv                        |
-| `_docker.yml`  | Primitive    | Docker build (native arm64 runner) and push to ghcr.io |
-| `_release.yml` | Primitive    | Wraps `googleapis/release-please-action`               |
-| `_deploy.yml`  | Primitive    | Update image tag in `Skesov/homelab` GitOps repo       |
+| Workflow           | Type         | Purpose                                                |
+| ------------------ | ------------ | ------------------------------------------------------ |
+| `ci.yml`           | Orchestrator | Python lint + test (for pull requests)                 |
+| `cd.yml`           | Orchestrator | Lint + test → release-please → build → deploy          |
+| `_lint-python.yml` | Primitive    | ruff check + ruff format via uv                        |
+| `_test-python.yml` | Primitive    | pytest via uv                                          |
+| `_lint-node.yml`   | Primitive    | typecheck + lint via pnpm/npm/yarn                     |
+| `_test-node.yml`   | Primitive    | unit tests + optional Playwright e2e                   |
+| `_lint-go.yml`     | Primitive    | golangci-lint                                          |
+| `_test-go.yml`     | Primitive    | `go test`                                              |
+| `_docker.yml`      | Primitive    | Docker build (native arm64 runner) and push to ghcr.io |
+| `_release.yml`     | Primitive    | Wraps `googleapis/release-please-action`               |
+| `_deploy.yml`      | Primitive    | Update image tag in `Skesov/homelab` GitOps repo       |
 
-Primitives can be called independently. Orchestrators compose them into a full pipeline.
+Primitives can be called independently — staging builds and manual redeploys call
+`_docker.yml` and `_deploy.yml` directly. Orchestrators compose them into a full pipeline.
 
 ## Pipeline
 
@@ -30,23 +35,25 @@ test
 **Push to master** — release-driven:
 
 ```text
-release ─┐
-lint  ───┤
-test  ───┤
-         └→ build (matrix per released component) → deploy (matrix)
+changes ─→ lint-python / test-python ─┐
+          lint-node   / test-node    ─┤
+          lint-go     / test-go      ─┴→ release → transform → build (matrix) → deploy (matrix)
 ```
+
+`changes` turns the caller's `components` list into dorny/paths-filter config and
+builds one lint/test matrix per stack, holding only the components whose `paths`
+changed in the push. A repo that declares one stack leaves the other matrices empty
+and those jobs are skipped.
 
 `release-please` only triggers `build` + `deploy` when a release PR is merged
 (i.e. when at least one component gets a new tag). On other pushes the action
 only opens or updates the release PR — `lint` and `test` still run, `build`
 and `deploy` are skipped.
 
-A repo declaring only some stacks leaves the other stacks' lint/test matrices
-empty, so those jobs are skipped. GitHub propagates a skip to every descendant
-whose `if` has no status function, which once silently swallowed the whole
-`transform → build → deploy` tail on a real release. `transform`, `build` and
-`deploy` therefore guard on `!cancelled() && needs.<prev>.result == 'success'`
-— keep that shape when editing them.
+GitHub propagates a skip to every descendant whose `if` has no status function,
+which once silently swallowed the whole `transform → build → deploy` tail on a
+real release. `transform`, `build` and `deploy` therefore guard on
+`!cancelled() && needs.<prev>.result == 'success'` — keep that shape when editing them.
 
 ## Add to a project
 
@@ -64,6 +71,9 @@ gh secret set GITOPS_TOKEN --repo Skesov/my-project
 ### Caller workflow files
 
 #### `.github/workflows/ci.yml`
+
+`ci.yml` covers Python only. For Node or Go pull-request checks, call
+`_lint-node.yml` / `_test-node.yml` / `_lint-go.yml` / `_test-go.yml` directly.
 
 ```yaml
 name: CI
@@ -87,6 +97,8 @@ jobs:
 
 #### `.github/workflows/cd.yml`
 
+Single Python service, one image, one HelmRelease:
+
 ```yaml
 name: CD
 
@@ -102,10 +114,29 @@ jobs:
   cd:
     uses: Skesov/github-workflows/.github/workflows/cd.yml@master
     with:
-      image-name: ${{ github.repository }}
-      ruff-paths: "src/"
-      pytest-paths: "tests/"
-      manifest-path: "flux/apps/my-project/helmrelease.yaml"
+      components: |
+        - name: bot
+          stack: python
+          paths:
+            - "src/**"
+            - "tests/**"
+            - "Dockerfile"
+            - "pyproject.toml"
+            - "uv.lock"
+          package-path: "."
+          setup:
+            python-version: "3.12"
+          lint:
+            paths: "src/"
+          test:
+            paths: "tests/"
+          image:
+            name: ${{ github.repository }}
+          deploy:
+            manifest-path: "flux/apps/my-project/helmrelease.yaml"
+            tag-paths: |
+              .spec.values.image.tag
+              .metadata.annotations["event.toolkit.fluxcd.io/version"]
     secrets:
       registry-token: ${{ secrets.GITHUB_TOKEN }}
       gitops-token: ${{ secrets.GITOPS_TOKEN }}
@@ -119,7 +150,74 @@ jobs:
 so `secrets: inherit` would not match the `registry-token` / `gitops-token`
 parameters and the job would fail at runtime.
 
-### Single-image release-please config
+## Components schema
+
+`components` is a YAML list passed as a string. One entry per releasable unit:
+its sources, its checks, its image, its manifest.
+
+| Key            | Required | Description                                                            |
+| -------------- | -------- | ---------------------------------------------------------------------- |
+| `name`         | yes      | Logical name. Matrix key and dorny filter id — must be unique          |
+| `stack`        | yes      | `python`, `node` or `go`. Picks the lint/test primitives               |
+| `paths`        | yes      | Globs for dorny/paths-filter. Lint and test run only when these change |
+| `package-path` | yes      | release-please key. Must match a key in `release-please-config.json`   |
+| `setup`        | no       | Runtime and workspace settings (see below)                             |
+| `lint`         | no       | Lint settings (see below)                                              |
+| `test`         | no       | Test settings (see below)                                              |
+| `image`        | yes      | Docker build settings (see below)                                      |
+| `deploy`       | yes      | GitOps settings (see below)                                            |
+
+### `setup`
+
+| Key                 | Stacks   | Default  | Description                               |
+| ------------------- | -------- | -------- | ----------------------------------------- |
+| `python-version`    | python   | `3.12`   | Python version for uv                     |
+| `node-version`      | node     | `22`     | Node.js version                           |
+| `go-version`        | go       | `stable` | Go version                                |
+| `package-manager`   | node     | `pnpm`   | `pnpm`, `npm` or `yarn`                   |
+| `install-command`   | node     | derived  | Override the install command              |
+| `working-directory` | node, go | `.`      | Directory holding `package.json`/`go.mod` |
+
+### `lint`
+
+| Key        | Stacks | Default                       | Description                        |
+| ---------- | ------ | ----------------------------- | ---------------------------------- |
+| `paths`    | python | `.`                           | Paths passed to ruff               |
+| `commands` | node   | `<pm> typecheck`, `<pm> lint` | Newline-separated commands         |
+| `version`  | go     | `latest`                      | golangci-lint version tag          |
+| `args`     | go     | `""`                          | Extra args for `golangci-lint run` |
+
+### `test`
+
+| Key                      | Stacks     | Default               | Description                                   |
+| ------------------------ | ---------- | --------------------- | --------------------------------------------- |
+| `paths`                  | python, go | `.` / `./...`         | Test paths                                    |
+| `args`                   | python, go | `""` / `-race -cover` | Extra args                                    |
+| `commands`               | node       | `<pm> test`           | Newline-separated test commands               |
+| `env`                    | all        | `{}`                  | Env vars as a YAML map, exported before tests |
+| `e2e-command`            | node       | `""`                  | Runs after `commands`. Empty skips e2e        |
+| `playwright`             | node       | `false`               | Install and cache Playwright Chromium         |
+| `playwright-report-path` | node       | `playwright-report/`  | Artifact uploaded when e2e fails              |
+
+### `image`
+
+| Key           | Required | Default                | Description                                               |
+| ------------- | -------- | ---------------------- | --------------------------------------------------------- |
+| `name`        | yes      | —                      | Image name, e.g. `owner/repo`                             |
+| `context`     | no       | `.`                    | Docker build context                                      |
+| `dockerfile`  | no       | `<context>/Dockerfile` | Path to Dockerfile, relative to repo root                 |
+| `build-args`  | no       | `""`                   | Newline-separated `KEY=value` build args                  |
+| `cache-scope` | no       | `""`                   | GHA cache scope. Set it when a repo builds several images |
+| `platforms`   | no       | `default-platforms`    | Target platforms                                          |
+
+### `deploy`
+
+| Key             | Required | Default                  | Description                          |
+| --------------- | -------- | ------------------------ | ------------------------------------ |
+| `manifest-path` | yes      | —                        | HelmRelease path in the GitOps repo  |
+| `tag-paths`     | no       | `.spec.values.image.tag` | Newline-separated yq paths to update |
+
+## Single-image release-please config
 
 For a single-image project, place these two files at the repo root:
 
@@ -150,7 +248,15 @@ Tags created: `v0.2.0`, `v0.3.0`, ... (no component prefix).
 Without it release-please prefixes the tag with `package-name`, producing
 `my-project-v0.2.0`.
 
-### Monorepo with multiple images
+### uv projects: keep `uv.lock` in step
+
+release-please bumps the version in `pyproject.toml` and never touches `uv.lock`,
+which pins the workspace package version too. An image built with `uv sync --locked`
+then fails with `The lockfile at uv.lock needs to be updated`; `--frozen` builds
+succeed but ship a lockfile one version behind. Refresh the lockfile on the release
+PR before it merges — see `release-lockfile.yml` in `Skesov/sub-manager-bot`.
+
+## Monorepo with multiple images
 
 Example: a Python backend (`bot/`) and a Vite/React frontend (`web/`) in one repo,
 each with its own Docker image and HelmRelease.
@@ -169,7 +275,7 @@ each with its own Docker image and HelmRelease.
     },
     "web": {
       "release-type": "node",
-      "package-name": "sub-manager-bot-web",
+      "package-name": "sub-manager-web",
       "component": "web",
       "include-component-in-tag": true
     }
@@ -188,37 +294,56 @@ Tags created: `bot-v0.2.0`, `web-v0.1.1`, etc. — independent per component.
 **`.github/workflows/cd.yml`** on the caller:
 
 ```yaml
-name: CD
-
-on:
-  push:
-    branches: [master]
-
-concurrency:
-  group: release
-  cancel-in-progress: false
-
 jobs:
   cd:
     uses: Skesov/github-workflows/.github/workflows/cd.yml@master
     with:
-      ruff-paths: "bot/"
-      pytest-paths: "bot/tests/"
-      images: |
-        - name: ${{ github.repository }}
-          package-path: bot
-          context: .
-          dockerfile: bot/Dockerfile
-          cache-scope: bot
-          manifest-path: flux/apps/sub-manager-bot/bot.yaml
-        - name: ${{ github.repository }}-web
-          package-path: web
-          context: web
-          dockerfile: web/Dockerfile
-          build-args: |
-            VITE_API_URL=https://api.example.com
-          cache-scope: web
-          manifest-path: flux/apps/sub-manager-bot/web.yaml
+      target-branch: main
+      components: |
+        - name: bot
+          stack: python
+          paths:
+            - "bot/**"
+            - "pyproject.toml"
+            - "uv.lock"
+          package-path: "bot"
+          lint:
+            paths: "bot/"
+          test:
+            paths: "bot/tests/"
+          image:
+            name: ${{ github.repository }}
+            context: "."
+            dockerfile: "bot/Dockerfile"
+            cache-scope: prod-bot
+          deploy:
+            manifest-path: "flux/apps/sub-manager-bot/helmrelease.yaml"
+        - name: web
+          stack: node
+          paths:
+            - "web/**"
+          package-path: "web"
+          setup:
+            node-version: "22"
+            package-manager: pnpm
+            working-directory: "web"
+          lint:
+            commands: |
+              pnpm typecheck
+              pnpm lint
+          test:
+            commands: pnpm test
+            e2e-command: pnpm e2e
+            playwright: true
+          image:
+            name: ${{ github.repository_owner }}/sub-manager-web
+            context: "web"
+            dockerfile: "web/Dockerfile"
+            build-args: |
+              VITE_API_URL=https://api.example.com
+            cache-scope: prod-web
+          deploy:
+            manifest-path: "flux/apps/sub-manager-bot/helmrelease-web.yaml"
     secrets:
       registry-token: ${{ secrets.GITHUB_TOKEN }}
       gitops-token: ${{ secrets.GITOPS_TOKEN }}
@@ -229,7 +354,9 @@ jobs:
 ```
 
 `package-path` must match a key in `release-please-config.json`. When release-please
-bumps only one component, only that component's image is built and deployed.
+bumps only one component, only that component's image is built and deployed. A
+release whose `package-path` matches no component fails `transform` with an explicit
+error rather than deploying nothing.
 
 ## Inputs reference
 
@@ -245,68 +372,106 @@ bumps only one component, only that component's image is built and deployed.
 
 ### `cd.yml`
 
-#### Lint and test
+| Input                   | Type   | Default            | Description                                      |
+| ----------------------- | ------ | ------------------ | ------------------------------------------------ |
+| `components`            | string | required           | YAML list of components (see schema above)       |
+| `target-branch`         | string | `"master"`         | Branch release-please tracks                     |
+| `release-config-file`   | string | `""`               | Override path to `release-please-config.json`    |
+| `release-manifest-file` | string | `""`               | Override path to `.release-please-manifest.json` |
+| `homelab-repo`          | string | `"Skesov/homelab"` | GitOps repo to update                            |
+| `environment`           | string | `"production"`     | GitHub Environment for protection rules          |
+| `default-platforms`     | string | `"linux/arm64"`    | Platforms when a component sets none             |
 
-| Input            | Type   | Default  | Description                 |
-| ---------------- | ------ | -------- | --------------------------- |
-| `python-version` | string | `"3.12"` | Python version              |
-| `ruff-paths`     | string | `"."`    | Paths to lint               |
-| `pytest-paths`   | string | `"."`    | Paths to test               |
-| `pytest-args`    | string | `""`     | Extra pytest arguments      |
-| `pytest-env`     | string | `"{}"`   | Env vars for pytest as JSON |
+Outputs: `releases_created` (string `"true"`/`"false"`) and `released_packages`
+(JSON array of `{path, tag, version}`).
 
-#### Single-image mode (when `images` is empty)
+### `_docker.yml`
 
-| Input            | Type   | Default                        | Description                                        |
-| ---------------- | ------ | ------------------------------ | -------------------------------------------------- |
-| `image-name`     | string | `""` (required if no `images`) | Docker image, e.g. `owner/repo`                    |
-| `docker-context` | string | `"."`                          | Docker build context                               |
-| `dockerfile`     | string | `""`                           | Path to Dockerfile; empty → `<context>/Dockerfile` |
-| `build-args`     | string | `""`                           | Newline `KEY=value` build args                     |
-| `cache-scope`    | string | `""`                           | GHA cache scope                                    |
-| `manifest-path`  | string | `""` (required if no `images`) | HelmRelease path in homelab                        |
-| `tag-paths`      | string | `".spec.values.image.tag"`     | Newline-separated yq paths to update               |
+| Input         | Type    | Default              | Description                               |
+| ------------- | ------- | -------------------- | ----------------------------------------- |
+| `image-name`  | string  | required             | Image name, e.g. `owner/repo`             |
+| `version`     | string  | required             | Version tag, e.g. `1.2.3`                 |
+| `registry`    | string  | `"ghcr.io"`          | Container registry                        |
+| `platforms`   | string  | `"linux/arm64"`      | Target platforms                          |
+| `runner`      | string  | `"ubuntu-24.04-arm"` | Runner label; the default builds natively |
+| `context`     | string  | `"."`                | Build context                             |
+| `dockerfile`  | string  | `""`                 | Empty means `<context>/Dockerfile`        |
+| `build-args`  | string  | `""`                 | Newline-separated `KEY=value`             |
+| `cache-scope` | string  | `""`                 | GHA cache scope                           |
+| `push-latest` | boolean | `false`              | Also push `:latest`                       |
 
-#### Multi-image mode
+### `_deploy.yml`
 
-| Input    | Type   | Default | Description                                    |
-| -------- | ------ | ------- | ---------------------------------------------- |
-| `images` | string | `""`    | YAML list of component image specs (see below) |
+| Input           | Type   | Default                    | Description                          |
+| --------------- | ------ | -------------------------- | ------------------------------------ |
+| `version`       | string | required                   | Version to deploy                    |
+| `manifest-path` | string | required                   | HelmRelease path in the GitOps repo  |
+| `homelab-repo`  | string | `"Skesov/homelab"`         | GitOps repo                          |
+| `tag-paths`     | string | `".spec.values.image.tag"` | Newline-separated yq paths to update |
+| `environment`   | string | `"production"`             | GitHub Environment                   |
 
-Each entry in `images` accepts: `name` (required), `package-path` (required, must
-match release-please config), `context`, `dockerfile`, `build-args`, `cache-scope`,
-`manifest-path` (required), `tag-paths`, `platforms`.
+### `_release.yml`
 
-#### Shared
+| Input           | Type   | Default    | Description                             |
+| --------------- | ------ | ---------- | --------------------------------------- |
+| `target-branch` | string | `"master"` | Branch to release from                  |
+| `config-file`   | string | `""`       | Path to `release-please-config.json`    |
+| `manifest-file` | string | `""`       | Path to `.release-please-manifest.json` |
 
-| Input          | Type   | Default            | Description                             |
-| -------------- | ------ | ------------------ | --------------------------------------- |
-| `platforms`    | string | `"linux/arm64"`    | Default platforms (per-image override)  |
-| `homelab-repo` | string | `"Skesov/homelab"` | GitOps repo to update                   |
-| `environment`  | string | `"production"`     | GitHub Environment for protection rules |
+### Stack primitives
 
-#### Release-please
+`_lint-python.yml`: `python-version`, `ruff-paths`.
+`_test-python.yml`: `python-version`, `pytest-paths`, `pytest-args`, `pytest-env`.
+`_lint-node.yml`: `node-version`, `package-manager`, `working-directory`, `install-command`, `lint-commands`.
+`_test-node.yml`: `node-version`, `package-manager`, `working-directory`, `install-command`, `test-commands`, `test-env`, `e2e-command`, `playwright`, `playwright-report-path`.
+`_lint-go.yml`: `go-version`, `working-directory`, `golangci-lint-version`, `args`.
+`_test-go.yml`: `go-version`, `working-directory`, `test-paths`, `test-args`, `test-env`.
 
-| Input                   | Type   | Default    | Description                                      |
-| ----------------------- | ------ | ---------- | ------------------------------------------------ |
-| `target-branch`         | string | `"master"` | Branch release-please tracks                     |
-| `release-config-file`   | string | `""`       | Override path to `release-please-config.json`    |
-| `release-manifest-file` | string | `""`       | Override path to `.release-please-manifest.json` |
+`cd.yml` maps `components[*]` onto these inputs; the defaults listed in the
+[components schema](#components-schema) are the ones `cd.yml` applies.
 
 ### Secrets
 
-| Secret           | Workflow | Description                                |
-| ---------------- | -------- | ------------------------------------------ |
-| `registry-token` | `cd.yml` | `GITHUB_TOKEN` — push to ghcr.io           |
-| `gitops-token`   | `cd.yml` | PAT with `contents: write` on homelab repo |
+| Secret           | Workflow                | Description                                |
+| ---------------- | ----------------------- | ------------------------------------------ |
+| `registry-token` | `cd.yml`, `_docker.yml` | `GITHUB_TOKEN` — push to ghcr.io           |
+| `gitops-token`   | `cd.yml`, `_deploy.yml` | PAT with `contents: write` on homelab repo |
 
 `ci.yml` accepts `secrets: inherit` — any caller repo secret becomes an env
 var in the pytest step via `toJSON(secrets)`. Useful for test fixtures that
 read API keys from the environment.
 
-`cd.yml` requires explicit `secrets:` mapping (see examples above). The
-`toJSON(secrets)` auto-export inside `cd.yml`'s pytest step only sees the
-two declared secrets; route any extra test secrets through `ci.yml` on PRs.
+`cd.yml` requires explicit `secrets:` mapping (see examples above) and forwards
+`secrets: inherit` to the test primitives, so a caller secret still reaches
+pytest and `go test` on master.
+
+## Migrating a caller to the components model
+
+`cd.yml` before the components model took flat `ruff-paths` / `pytest-paths`
+inputs plus either single-image inputs (`image-name`, `manifest-path`, ...) or an
+`images:` list. All of them are gone; a caller still passing them fails at input
+validation before the first job starts.
+
+| Old input        | New location                                          |
+| ---------------- | ----------------------------------------------------- |
+| `ruff-paths`     | `components[].lint.paths`                             |
+| `pytest-paths`   | `components[].test.paths`                             |
+| `pytest-args`    | `components[].test.args`                              |
+| `pytest-env`     | `components[].test.env`                               |
+| `python-version` | `components[].setup.python-version`                   |
+| `image-name`     | `components[].image.name`                             |
+| `docker-context` | `components[].image.context`                          |
+| `dockerfile`     | `components[].image.dockerfile`                       |
+| `build-args`     | `components[].image.build-args`                       |
+| `cache-scope`    | `components[].image.cache-scope`                      |
+| `manifest-path`  | `components[].deploy.manifest-path`                   |
+| `tag-paths`      | `components[].deploy.tag-paths`                       |
+| `platforms`      | `components[].image.platforms` or `default-platforms` |
+| `images[]`       | one `components[]` entry each                         |
+
+New required keys with no old counterpart: `name`, `stack`, `paths`. `paths` gates
+lint and test per component — list every path whose change must re-run the checks,
+including the caller workflow file itself.
 
 ## Migrating from the old `cd.yml` (mathieudutour)
 
