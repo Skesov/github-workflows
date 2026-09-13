@@ -1,7 +1,12 @@
 name: Probe
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [fix/cd-transform-outputs]
+    paths:
+      - ".github/workflows/probe.yml"
+      - ".github/workflows/_probe-mid.yml"
+      - ".github/workflows/_probe-inner.yml"
 
 jobs:
   mid:
