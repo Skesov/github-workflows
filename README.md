@@ -41,6 +41,13 @@ test  ───┤
 only opens or updates the release PR — `lint` and `test` still run, `build`
 and `deploy` are skipped.
 
+A repo declaring only some stacks leaves the other stacks' lint/test matrices
+empty, so those jobs are skipped. GitHub propagates a skip to every descendant
+whose `if` has no status function, which once silently swallowed the whole
+`transform → build → deploy` tail on a real release. `transform`, `build` and
+`deploy` therefore guard on `!cancelled() && needs.<prev>.result == 'success'`
+— keep that shape when editing them.
+
 ## Add to a project
 
 ### Prerequisites

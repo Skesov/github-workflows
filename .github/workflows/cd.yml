@@ -295,9 +295,19 @@ jobs:
       manifest-file: ${{ inputs.release-manifest-file }}
 
   # Build the docker matrix from components, keeping only released ones.
+  #
+  # The status function in `if` is load-bearing, not decoration. Stacks a repo
+  # does not use produce empty lint/test matrices, those jobs are skipped, and
+  # a skipped job propagates down the graph: every descendant whose `if` lacks
+  # a status function is skipped too, however well its own condition reads.
+  # Without `!cancelled()` here the whole build+deploy tail silently vanishes
+  # on any repo that is not simultaneously python, node and go.
   transform:
     needs: release
-    if: needs.release.outputs.releases_created == 'true'
+    if: >-
+      ${{ !cancelled()
+      && needs.release.result == 'success'
+      && needs.release.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     outputs:
       build_matrix: ${{ steps.t.outputs.build_matrix }}
@@ -352,6 +362,7 @@ jobs:
 
   build:
     needs: [release, transform]
+    if: ${{ !cancelled() && needs.transform.result == 'success' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.transform.outputs.build_matrix) }}
@@ -370,6 +381,7 @@ jobs:
 
   deploy:
     needs: [release, transform, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     strategy:
       fail-fast: false
       max-parallel: 1
