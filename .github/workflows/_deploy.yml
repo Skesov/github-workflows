@@ -55,6 +55,15 @@ jobs:
           VERSION: ${{ inputs.version }}
           MANIFEST: ${{ inputs.manifest-path }}
         run: |
+          set -euo pipefail
+          # Deploying a version the manifest already carries is a no-op, not a
+          # failure: a re-run of a half-finished deploy, or a manual redeploy
+          # after the first one landed, would otherwise fail on an empty commit
+          # and read as "the deploy broke" when the cluster is already correct.
+          if git diff --quiet -- "$MANIFEST"; then
+            echo "$MANIFEST already points at $VERSION — nothing to push"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "$MANIFEST"
