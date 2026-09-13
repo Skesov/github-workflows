@@ -1,0 +1,45 @@
+name: Probe Mid
+
+on:
+  workflow_call:
+
+jobs:
+  skipped_dep:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo never
+
+  rel_plain:
+    uses: ./.github/workflows/_probe-inner.yml
+
+  rel_cond:
+    needs: [skipped_dep]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
+    uses: ./.github/workflows/_probe-inner.yml
+
+  observe:
+    needs: [rel_plain, rel_cond]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "plain.flag=[${{ needs.rel_plain.outputs.flag }}]"
+          echo "plain.payload=[${{ needs.rel_plain.outputs.payload }}]"
+          echo "cond.flag=[${{ needs.rel_cond.outputs.flag }}]"
+          echo "cond.payload=[${{ needs.rel_cond.outputs.payload }}]"
+        shell: bash
+
+  gate_plain:
+    needs: rel_plain
+    if: needs.rel_plain.outputs.flag == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "gate_plain ran"
+
+  gate_cond:
+    needs: rel_cond
+    if: needs.rel_cond.outputs.flag == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "gate_cond ran"
