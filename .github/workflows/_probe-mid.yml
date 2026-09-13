@@ -18,18 +18,11 @@ jobs:
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
     uses: ./.github/workflows/_probe-inner.yml
 
-  observe:
-    needs: [rel_plain, rel_cond]
+  rel_cond_nodep:
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          echo "plain.flag=[${{ needs.rel_plain.outputs.flag }}]"
-          echo "plain.payload=[${{ needs.rel_plain.outputs.payload }}]"
-          echo "cond.flag=[${{ needs.rel_cond.outputs.flag }}]"
-          echo "cond.payload=[${{ needs.rel_cond.outputs.payload }}]"
-        shell: bash
+    uses: ./.github/workflows/_probe-inner.yml
 
+  # Baseline: plain ancestor, plain gate.
   gate_plain:
     needs: rel_plain
     if: needs.rel_plain.outputs.flag == 'true'
@@ -37,9 +30,26 @@ jobs:
     steps:
       - run: echo "gate_plain ran"
 
+  # Ancestor has a skipped dependency; gate has no status function.
   gate_cond:
     needs: rel_cond
     if: needs.rel_cond.outputs.flag == 'true'
     runs-on: ubuntu-latest
     steps:
       - run: echo "gate_cond ran"
+
+  # Same ancestor, but the gate carries a status function.
+  gate_cond_status:
+    needs: rel_cond
+    if: ${{ !cancelled() && needs.rel_cond.outputs.flag == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "gate_cond_status ran"
+
+  # Conditional ancestor without any skipped dependency.
+  gate_nodep:
+    needs: rel_cond_nodep
+    if: needs.rel_cond_nodep.outputs.flag == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "gate_nodep ran"
