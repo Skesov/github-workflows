@@ -40,6 +40,8 @@ The `deploy` matrix uses `max-parallel: 1` to serialize commits against `Skesov/
 - Multi-image callers set `images:` (YAML list) and link each entry to a release-please package via `package-path`.
 - `_docker.yml` runs on `ubuntu-24.04-arm` and builds `linux/arm64` by default — matches the arm-only target cluster. Override `runner`/`platforms` per call to build for amd64 (cross-compiled via QEMU).
 
+- **Every job downstream of a matrix-driven lint/test job needs a status function in `if`.** A repo that uses only one stack leaves the other stacks' matrices empty, those jobs are skipped, and GitHub skips every descendant whose `if` lacks `!cancelled()` / `always()` / `success()` — no matter what the condition itself evaluates to. This is why `transform`, `build` and `deploy` all carry `!cancelled() && needs.<prev>.result == 'success'`. Dropping it makes the release tail disappear with no error anywhere.
+
 ## Caller requirements
 
 Every consumer of `cd.yml` must:
